@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -123,4 +126,104 @@ func (c *Client) postJSON(ctx context.Context, url string, body, out any) error 
 		return fmt.Errorf("decode alchemy response: %w", err)
 	}
 	return nil
+}
+
+type rpcRequest struct {
+	ID      int    `json:"id"`
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  []any  `json:"params"`
+}
+
+type transfersResponse struct {
+	Result struct {
+		Transfers []struct {
+			Hash     string   `json:"hash"`
+			From     string   `json:"from"`
+			To       string   `json:"to"`
+			Asset    string   `json:"asset"`
+			Value    *float64 `json:"value"`
+			BlockNum string   `json:"blockNum"`
+			Category string   `json:"category"`
+		} `json:"transfers"`
+		PageKey string `json:"pageKey"`
+	} `json:"result"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// GetTransfers returns the most recent `limit` transfers (both directions) for address.
+func (c *Client) GetTransfers(ctx context.Context, address string, limit int, pageKey string) (TransfersResult, error) {
+	outgoing, err := c.fetchTransfers(ctx, "fromAddress", address, limit)
+	if err != nil {
+		return TransfersResult{}, err
+	}
+	incoming, err := c.fetchTransfers(ctx, "toAddress", address, limit)
+	if err != nil {
+		return TransfersResult{}, err
+	}
+	merged := dedupeTransfers(append(outgoing, incoming...))
+	sort.SliceStable(merged, func(i, j int) bool {
+		return blockNumValue(merged[i].BlockNum) > blockNumValue(merged[j].BlockNum)
+	})
+	if limit > 0 && len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return TransfersResult{Transfers: merged}, nil
+}
+
+func (c *Client) fetchTransfers(ctx context.Context, direction, address string, limit int) ([]Transfer, error) {
+	params := map[string]any{
+		"fromBlock":    "0x0",
+		"toBlock":      "latest",
+		"category":     []string{"external", "erc20"},
+		"withMetadata": false,
+		"order":        "desc",
+		"maxCount":     fmt.Sprintf("0x%x", limit),
+		direction:      address,
+	}
+	body := rpcRequest{ID: 1, JSONRPC: "2.0", Method: "alchemy_getAssetTransfers", Params: []any{params}}
+	var resp transfersResponse
+	if err := c.postJSON(ctx, c.rpcURL, body, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf("alchemy rpc error: %s", resp.Error.Message)
+	}
+	out := make([]Transfer, 0, len(resp.Result.Transfers))
+	for _, t := range resp.Result.Transfers {
+		value := ""
+		if t.Value != nil {
+			value = strconv.FormatFloat(*t.Value, 'f', -1, 64)
+		}
+		out = append(out, Transfer{
+			Hash: t.Hash, From: t.From, To: t.To, Asset: t.Asset,
+			Value: value, BlockNum: t.BlockNum, Category: t.Category,
+		})
+	}
+	return out, nil
+}
+
+func dedupeTransfers(in []Transfer) []Transfer {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]Transfer, 0, len(in))
+	for _, t := range in {
+		key := t.Hash + "|" + t.From + "|" + t.To + "|" + t.Asset + "|" + t.Value
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, t)
+	}
+	return out
+}
+
+// blockNumValue parses a 0x-hex block number; unparseable values sort last.
+func blockNumValue(s string) uint64 {
+	n, err := strconv.ParseUint(strings.TrimPrefix(s, "0x"), 16, 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }
