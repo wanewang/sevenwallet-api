@@ -68,4 +68,17 @@ func TestGetTokensWrapsUpstreamError(t *testing.T) {
 	}
 }
 
+func TestGetTokensWrapsSaveError(t *testing.T) {
+	fa := &fakeAlchemy{tokens: []alchemy.Token{
+		{TokenAddress: nil, Symbol: "ETH", Decimals: 18, RawBalance: "1500000000000000000"},
+	}}
+	ts := &fakeTokenStore{saveErr: errors.New("db down")}
+	svc := NewService(fa, ts, &fakeTxCache{}, "eth-mainnet", time.Minute)
+
+	_, err := svc.GetTokens(context.Background(), "0xABC")
+	if err == nil || !errorsIs(err, ErrStore) {
+		t.Errorf("expected ErrStore from SaveTokens failure, got %v", err)
+	}
+}
+
 func errorsIs(err, target error) bool { return errors.Is(err, target) }
