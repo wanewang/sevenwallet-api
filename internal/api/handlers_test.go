@@ -76,6 +76,26 @@ func TestTransactionsDefaultLimit(t *testing.T) {
 	}
 }
 
+func TestTransactionsLimitBounds(t *testing.T) {
+	cases := []struct {
+		query string
+		want  int
+	}{
+		{"?limit=0", 25},    // non-positive → default
+		{"?limit=-1", 25},   // non-positive → default
+		{"?limit=abc", 25},  // unparseable → default
+		{"?limit=101", 100}, // over-max → clamped
+		{"?limit=100", 100}, // at-max → passthrough
+	}
+	for _, c := range cases {
+		svc := &stubService{page: &wallet.TransactionPage{Address: validAddr}}
+		doGet(NewRouter(svc), "/v1/addresses/"+validAddr+"/transactions"+c.query)
+		if svc.lastLimit != c.want {
+			t.Errorf("%s: limit = %d, want %d", c.query, svc.lastLimit, c.want)
+		}
+	}
+}
+
 func TestUpstreamErrorMapsTo502(t *testing.T) {
 	svc := &stubService{err: wallet.ErrUpstream}
 	rec := doGet(NewRouter(svc), "/v1/addresses/"+validAddr+"/tokens")
