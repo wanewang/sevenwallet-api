@@ -21,6 +21,9 @@ func TestScaleBalance(t *testing.T) {
 		{"1000000", 6, "1000000", "1"},
 		{"0x0", 18, "0", "0"},
 		{"", 18, "0", "0"},
+		{"1", 18, "1", "0.000000000000000001"},
+		{"1000000000000000001", 18, "1000000000000000001", "1.000000000000000001"},
+		{"1000", 0, "1000", "1000"},
 	}
 	for _, c := range cases {
 		rawDec, scaled, err := ScaleBalance(c.raw, c.dec)
@@ -36,5 +39,11 @@ func TestScaleBalance(t *testing.T) {
 func TestScaleBalanceInvalid(t *testing.T) {
 	if _, _, err := ScaleBalance("not-a-number", 18); err == nil {
 		t.Fatal("expected error for invalid input")
+	}
+}
+
+func TestScaleBalanceNegative(t *testing.T) {
+	if _, _, err := ScaleBalance("-5", 18); err == nil {
+		t.Fatal("expected error for negative balance")
 	}
 }

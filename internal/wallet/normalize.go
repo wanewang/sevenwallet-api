@@ -24,6 +24,9 @@ func ScaleBalance(raw string, decimals int) (string, string, error) {
 	if !ok {
 		return "", "", fmt.Errorf("invalid balance %q", raw)
 	}
+	if n.Sign() < 0 {
+		return "", "", fmt.Errorf("invalid balance %q: negative", raw)
+	}
 	rawDecimal := n.String()
 	if decimals <= 0 {
 		return rawDecimal, rawDecimal, nil
