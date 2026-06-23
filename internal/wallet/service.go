@@ -52,6 +52,49 @@ func (s *Service) GetTokens(ctx context.Context, address string) (*TokenPortfoli
 	return p, nil
 }
 
+// GetTransactions returns a page of transfer history for address. The first page
+// (no pageKey) is served cache-first and written through; pageKey requests bypass
+// the cache.
+func (s *Service) GetTransactions(ctx context.Context, address string, limit int, pageKey string) (*TransactionPage, error) {
+	addr := NormalizeAddress(address)
+	params := fmt.Sprintf("limit=%d", limit)
+
+	if pageKey == "" {
+		if p, ok, err := s.txs.GetFreshTransactions(ctx, addr, params, s.ttl); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrStore, err)
+		} else if ok {
+			return p, nil
+		}
+	}
+
+	res, err := s.alchemy.GetTransfers(ctx, addr, limit, pageKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUpstream, err)
+	}
+	page := &TransactionPage{
+		Address:     addr,
+		Transfers:   mapTransfers(res.Transfers),
+		NextPageKey: res.PageKey,
+	}
+	if pageKey == "" {
+		if err := s.txs.SaveTransactions(ctx, addr, params, page); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrStore, err)
+		}
+	}
+	return page, nil
+}
+
+func mapTransfers(in []alchemy.Transfer) []Transfer {
+	out := make([]Transfer, 0, len(in))
+	for _, t := range in {
+		out = append(out, Transfer{
+			Hash: t.Hash, From: t.From, To: t.To, Asset: t.Asset,
+			Value: t.Value, BlockNum: t.BlockNum, Category: t.Category,
+		})
+	}
+	return out
+}
+
 // normalizeTokens converts raw Alchemy tokens into domain tokens with scaled balances.
 func normalizeTokens(raw []alchemy.Token) ([]Token, error) {
 	out := make([]Token, 0, len(raw))

@@ -82,3 +82,57 @@ func TestGetTokensWrapsSaveError(t *testing.T) {
 }
 
 func errorsIs(err, target error) bool { return errors.Is(err, target) }
+
+func TestGetTransactionsCacheMissFetchesAndSaves(t *testing.T) {
+	fa := &fakeAlchemy{transfers: alchemy.TransfersResult{Transfers: []alchemy.Transfer{
+		{Hash: "0x1", From: "0xabc", To: "0xdef", Asset: "ETH", Value: "0.5", BlockNum: "0x20", Category: "external"},
+	}}}
+	tc := &fakeTxCache{}
+	svc := NewService(fa, &fakeTokenStore{}, tc, "eth-mainnet", time.Minute)
+
+	page, err := svc.GetTransactions(context.Background(), "0xABC", 25, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fa.txCalls != 1 || tc.saveCalls != 1 {
+		t.Errorf("expected 1 fetch + 1 save, got fetch=%d save=%d", fa.txCalls, tc.saveCalls)
+	}
+	if page.Address != "0xabc" || len(page.Transfers) != 1 || page.Transfers[0].Hash != "0x1" {
+		t.Errorf("page wrong: %+v", page)
+	}
+}
+
+func TestGetTransactionsCacheHit(t *testing.T) {
+	cached := &TransactionPage{Address: "0xabc", Transfers: []Transfer{{Hash: "0xcached"}}}
+	fa := &fakeAlchemy{}
+	tc := &fakeTxCache{saved: cached, fresh: true}
+	svc := NewService(fa, &fakeTokenStore{}, tc, "eth-mainnet", time.Minute)
+
+	page, err := svc.GetTransactions(context.Background(), "0xABC", 25, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fa.txCalls != 0 || page != cached {
+		t.Errorf("expected cache hit, got fetch=%d", fa.txCalls)
+	}
+}
+
+func TestGetTransactionsPageKeyBypassesCache(t *testing.T) {
+	fa := &fakeAlchemy{transfers: alchemy.TransfersResult{Transfers: []alchemy.Transfer{{Hash: "0x2"}}}}
+	tc := &fakeTxCache{saved: &TransactionPage{Transfers: []Transfer{{Hash: "0xcached"}}}, fresh: true}
+	svc := NewService(fa, &fakeTokenStore{}, tc, "eth-mainnet", time.Minute)
+
+	page, err := svc.GetTransactions(context.Background(), "0xABC", 25, "PAGEKEY123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fa.txCalls != 1 {
+		t.Errorf("pageKey should force a fetch, got %d", fa.txCalls)
+	}
+	if tc.saveCalls != 0 {
+		t.Errorf("pageKey fetches must not be cached, got %d saves", tc.saveCalls)
+	}
+	if len(page.Transfers) != 1 || page.Transfers[0].Hash != "0x2" {
+		t.Errorf("expected fresh page, got %+v", page)
+	}
+}
