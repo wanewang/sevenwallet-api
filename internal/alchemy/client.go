@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -114,6 +115,8 @@ func (c *Client) postJSON(ctx context.Context, url string, body, out any) error 
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		// Drain the body so the connection can be reused by the transport.
+		_, _ = io.Copy(io.Discard, res.Body)
 		return fmt.Errorf("alchemy returned status %d", res.StatusCode)
 	}
 	if err := json.NewDecoder(res.Body).Decode(out); err != nil {
