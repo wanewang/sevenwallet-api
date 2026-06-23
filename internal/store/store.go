@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -49,18 +50,20 @@ func tokenKey(t wallet.Token) string {
 	if t.IsNative || t.TokenAddress == nil {
 		return "native"
 	}
-	return *t.TokenAddress
+	return strings.ToLower(*t.TokenAddress)
 }
 
 // SaveTokens replaces the token snapshot for (address, network) in one transaction.
 func (s *Postgres) SaveTokens(ctx context.Context, p *wallet.TokenPortfolio) error {
+	address := strings.ToLower(p.Address)
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx, `DELETE FROM wallet_tokens WHERE address=$1 AND network=$2`, p.Address, p.Network); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM wallet_tokens WHERE address=$1 AND network=$2`, address, p.Network); err != nil {
 		return err
 	}
 	for _, t := range p.Tokens {
@@ -68,12 +71,17 @@ func (s *Postgres) SaveTokens(ctx context.Context, p *wallet.TokenPortfolio) err
 		if t.Price != nil {
 			curr, val, updated = &t.Price.Currency, &t.Price.Value, &t.Price.LastUpdatedAt
 		}
+		var tokenAddr *string
+		if t.TokenAddress != nil {
+			lower := strings.ToLower(*t.TokenAddress)
+			tokenAddr = &lower
+		}
 		_, err := tx.Exec(ctx, `
 			INSERT INTO wallet_tokens
 			(address, network, token_key, token_address, is_native, symbol, name, decimals,
 			 raw_balance, balance, price_currency, price_value, price_updated_at, fetched_at)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-			p.Address, p.Network, tokenKey(t), t.TokenAddress, t.IsNative, t.Symbol, t.Name, t.Decimals,
+			address, p.Network, tokenKey(t), tokenAddr, t.IsNative, t.Symbol, t.Name, t.Decimals,
 			t.RawBalance, t.Balance, curr, val, updated, p.FetchedAt)
 		if err != nil {
 			return err
@@ -83,7 +91,7 @@ func (s *Postgres) SaveTokens(ctx context.Context, p *wallet.TokenPortfolio) err
 		INSERT INTO token_fetch_meta (address, network, fetched_at)
 		VALUES ($1,$2,$3)
 		ON CONFLICT (address, network) DO UPDATE SET fetched_at=EXCLUDED.fetched_at`,
-		p.Address, p.Network, p.FetchedAt); err != nil {
+		address, p.Network, p.FetchedAt); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -91,6 +99,8 @@ func (s *Postgres) SaveTokens(ctx context.Context, p *wallet.TokenPortfolio) err
 
 // GetFreshTokens returns the snapshot if its fetch time is within ttl.
 func (s *Postgres) GetFreshTokens(ctx context.Context, address, network string, ttl time.Duration) (*wallet.TokenPortfolio, bool, error) {
+	address = strings.ToLower(address)
+
 	var fetchedAt time.Time
 	err := s.pool.QueryRow(ctx, `
 		SELECT fetched_at FROM token_fetch_meta
@@ -125,11 +135,16 @@ func (s *Postgres) GetFreshTokens(ctx context.Context, address, network string, 
 		}
 		p.Tokens = append(p.Tokens, t)
 	}
-	return p, true, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	return p, true, nil
 }
 
 // SaveTransactions upserts a transaction page as JSON.
 func (s *Postgres) SaveTransactions(ctx context.Context, address, params string, page *wallet.TransactionPage) error {
+	address = strings.ToLower(address)
+
 	payload, err := json.Marshal(page)
 	if err != nil {
 		return err
@@ -144,6 +159,8 @@ func (s *Postgres) SaveTransactions(ctx context.Context, address, params string,
 
 // GetFreshTransactions returns the cached page if within ttl.
 func (s *Postgres) GetFreshTransactions(ctx context.Context, address, params string, ttl time.Duration) (*wallet.TransactionPage, bool, error) {
+	address = strings.ToLower(address)
+
 	var payload []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT payload FROM tx_cache

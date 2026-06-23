@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,6 +53,26 @@ func TestSaveAndGetFreshTokens(t *testing.T) {
 	if len(got.Tokens) != 2 {
 		t.Fatalf("got %d tokens, want 2", len(got.Tokens))
 	}
+	// Assert native token price round-trips correctly.
+	var native *wallet.Token
+	for i := range got.Tokens {
+		if got.Tokens[i].TokenAddress == nil {
+			native = &got.Tokens[i]
+			break
+		}
+	}
+	if native == nil {
+		t.Fatal("native token not found in result")
+	}
+	if native.Price == nil {
+		t.Fatal("native token Price is nil, want non-nil")
+	}
+	if native.Price.Currency != "usd" {
+		t.Errorf("native Price.Currency = %q, want %q", native.Price.Currency, "usd")
+	}
+	if native.Price.Value != "3200.50" {
+		t.Errorf("native Price.Value = %q, want %q", native.Price.Value, "3200.50")
+	}
 }
 
 func TestGetFreshTokensExpired(t *testing.T) {
@@ -82,6 +103,36 @@ func TestSaveTokensReplacesSnapshot(t *testing.T) {
 	got, _, _ := s.GetFreshTokens(ctx, "0xabc", "eth-mainnet", time.Minute)
 	if len(got.Tokens) != 1 || got.Tokens[0].Symbol != "NEW" {
 		t.Errorf("snapshot not replaced: %+v", got.Tokens)
+	}
+}
+
+func TestSaveTokensLowercasesKeys(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	mixedAddr := "0xAbCdEf0000000000000000000000000000000001"
+	p := &wallet.TokenPortfolio{
+		Address: "0xABC", Network: "eth-mainnet", FetchedAt: time.Now().UTC(),
+		Tokens: []wallet.Token{
+			{TokenAddress: &mixedAddr, Symbol: "MIX", Decimals: 18, RawBalance: "1", Balance: "1"},
+		},
+	}
+	if err := s.SaveTokens(ctx, p); err != nil {
+		t.Fatalf("SaveTokens: %v", err)
+	}
+	// Read back using lowercase address — must find the snapshot.
+	got, ok, err := s.GetFreshTokens(ctx, "0xabc", "eth-mainnet", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("GetFreshTokens ok=%v err=%v", ok, err)
+	}
+	if len(got.Tokens) != 1 {
+		t.Fatalf("got %d tokens, want 1", len(got.Tokens))
+	}
+	tok := got.Tokens[0]
+	if tok.TokenAddress == nil {
+		t.Fatal("TokenAddress is nil, want lowercase hex")
+	}
+	if *tok.TokenAddress != strings.ToLower(mixedAddr) {
+		t.Errorf("TokenAddress = %q, want %q", *tok.TokenAddress, strings.ToLower(mixedAddr))
 	}
 }
 
