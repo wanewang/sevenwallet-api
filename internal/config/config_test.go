@@ -43,7 +43,16 @@ func TestLoadFromHonoursOverrides(t *testing.T) {
 }
 
 func TestLoadFromRequiresKeyAndDB(t *testing.T) {
+	// All empty: should fail on ALCHEMY_API_KEY
 	if _, err := loadFrom(func(string) string { return "" }); err == nil {
 		t.Fatal("expected error when ALCHEMY_API_KEY/DATABASE_URL missing")
+	}
+
+	// Only ALCHEMY_API_KEY set: should fail on DATABASE_URL
+	env := map[string]string{
+		"ALCHEMY_API_KEY": "key123",
+	}
+	if _, err := loadFrom(func(k string) string { return env[k] }); err == nil {
+		t.Fatal("expected error when DATABASE_URL missing")
 	}
 }
