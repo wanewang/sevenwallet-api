@@ -59,7 +59,7 @@ Each layer depends only on the layer(s) below it:
 
 ### Tech choices
 
-- **Language:** Go (1.22+ for `net/http` method-and-pattern routing; no router dependency).
+- **Language:** Go. The `net/http` method-and-pattern routing requires 1.22+, but the effective floor is **1.25** because the `github.com/jackc/pgx/v5` dependency declares `go 1.25.0`; `go.mod` is pinned accordingly.
 - **HTTP:** standard library `net/http`.
 - **Data source:** Alchemy Portfolio API + `getAssetTransfers`.
 - **Database:** Postgres (run locally via `docker-compose.yml`).
@@ -230,7 +230,7 @@ CREATE TABLE wallet_tokens (
     balance          TEXT NOT NULL,           -- scaled decimal string
     price_currency   TEXT,
     price_value      TEXT,
-    price_updated_at TIMESTAMPTZ,
+    price_updated_at TEXT,        -- stored as the upstream ISO-8601 string verbatim
     fetched_at       TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (address, network, token_key)
 );
