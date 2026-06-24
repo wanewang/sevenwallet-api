@@ -10,19 +10,15 @@ import (
 	"wallet-api/internal/api"
 	"wallet-api/internal/config"
 	"wallet-api/internal/lifi"
+	"wallet-api/internal/rediscache"
 	"wallet-api/internal/store"
+	"wallet-api/internal/tokenlist"
 	"wallet-api/internal/wallet"
 )
 
-// permitAll is a placeholder Allowlist that passes every token through until
-// the real tokenlist.Holder is wired up in Task 8.
-type permitAll struct{}
-
-func (permitAll) LookupByAddress(addr string) (lifi.ListToken, bool) {
-	return lifi.ListToken{Address: addr}, true
-}
-
-func (permitAll) HasSymbol(_ string) bool { return true }
+// redisTokenListTTL is the safety TTL for the cached list; longer than the
+// refresh interval so a present-but-stale list survives refresher hiccups.
+const redisTokenListTTL = 24 * time.Hour
 
 func main() {
 	cfg, err := config.Load()
@@ -30,20 +26,38 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	setupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pg, err := store.New(ctx, cfg.DatabaseURL)
+	pg, err := store.New(setupCtx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("store: %v", err)
 	}
 	defer pg.Close()
-	if err := pg.Migrate(ctx); err != nil {
+	if err := pg.Migrate(setupCtx); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
 
+	redisCache, err := rediscache.New(cfg.RedisURL, redisTokenListTTL)
+	if err != nil {
+		log.Fatalf("redis: %v", err)
+	}
+	defer redisCache.Close()
+	if err := redisCache.Ping(setupCtx); err != nil {
+		log.Fatalf("redis ping: %v", err)
+	}
+
+	lifiClient := lifi.New(cfg.LifiTokensURL)
+	holder := &tokenlist.Holder{}
+	refresher := tokenlist.NewRefresher(lifiClient, redisCache, pg, holder, cfg.LifiChain, cfg.LifiRefresh)
+	if err := refresher.Bootstrap(setupCtx); err != nil {
+		log.Fatalf("token list bootstrap: %v", err)
+	}
+	go refresher.Run(context.Background())
+	log.Printf("token list ready: %d tokens (chain=%s, refresh=%s)", holder.Current().Count(), cfg.LifiChain, cfg.LifiRefresh)
+
 	ac := alchemy.New(cfg.AlchemyAPIKey, cfg.AlchemyNetwork)
-	svc := wallet.NewService(ac, pg, pg, permitAll{}, cfg.AlchemyNetwork, cfg.CacheTTL)
+	svc := wallet.NewService(ac, pg, pg, holder, cfg.AlchemyNetwork, cfg.CacheTTL)
 	router := api.NewRouter(svc)
 
 	srv := &http.Server{
