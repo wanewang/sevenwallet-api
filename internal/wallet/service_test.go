@@ -174,6 +174,9 @@ func TestGetTransactionsCacheMissFiltersAndSaves(t *testing.T) {
 	if fa.txCalls != 1 || tc.saveCalls != 1 {
 		t.Errorf("expected 1 fetch + 1 save, got fetch=%d save=%d", fa.txCalls, tc.saveCalls)
 	}
+	if tc.saved == nil || len(tc.saved.Transfers) != 3 {
+		t.Errorf("cache should store raw 3-transfer snapshot, got %+v", tc.saved)
+	}
 	if len(page.Transfers) != 2 {
 		t.Fatalf("expected ETH+USDC kept, SCAM dropped; got %+v", page.Transfers)
 	}
