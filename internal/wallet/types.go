@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"wallet-api/internal/alchemy"
+	"wallet-api/internal/lifi"
 )
 
 // Sentinel errors let the API layer map failures to HTTP status codes.
@@ -31,6 +32,9 @@ type Token struct {
 	Balance      string  `json:"balance"`
 	IsNative     bool    `json:"isNative"`
 	Price        *Price  `json:"price"`
+	LogoURI  *string `json:"logoURI,omitempty"`
+	CoinKey  *string `json:"coinKey,omitempty"`
+	PriceUSD *string `json:"priceUSD,omitempty"`
 }
 
 // TokenPortfolio is the current token snapshot for an address.
@@ -57,6 +61,12 @@ type TransactionPage struct {
 	Address     string     `json:"address"`
 	Transfers   []Transfer `json:"transfers"`
 	NextPageKey string     `json:"nextPageKey,omitempty"`
+}
+
+// Allowlist is the LI.FI token allowlist the service filters/enriches against.
+type Allowlist interface {
+	LookupByAddress(addr string) (lifi.ListToken, bool)
+	HasSymbol(sym string) bool
 }
 
 // AlchemyClient is the subset of the Alchemy client the service depends on.

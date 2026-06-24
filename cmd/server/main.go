@@ -9,9 +9,20 @@ import (
 	"wallet-api/internal/alchemy"
 	"wallet-api/internal/api"
 	"wallet-api/internal/config"
+	"wallet-api/internal/lifi"
 	"wallet-api/internal/store"
 	"wallet-api/internal/wallet"
 )
+
+// permitAll is a placeholder Allowlist that passes every token through until
+// the real tokenlist.Holder is wired up in Task 8.
+type permitAll struct{}
+
+func (permitAll) LookupByAddress(addr string) (lifi.ListToken, bool) {
+	return lifi.ListToken{Address: addr}, true
+}
+
+func (permitAll) HasSymbol(_ string) bool { return true }
 
 func main() {
 	cfg, err := config.Load()
@@ -32,7 +43,7 @@ func main() {
 	}
 
 	ac := alchemy.New(cfg.AlchemyAPIKey, cfg.AlchemyNetwork)
-	svc := wallet.NewService(ac, pg, pg, cfg.AlchemyNetwork, cfg.CacheTTL)
+	svc := wallet.NewService(ac, pg, pg, permitAll{}, cfg.AlchemyNetwork, cfg.CacheTTL)
 	router := api.NewRouter(svc)
 
 	srv := &http.Server{
