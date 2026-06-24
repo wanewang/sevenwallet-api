@@ -19,5 +19,7 @@ func NewRouter(svc WalletService) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/addresses/{address}/tokens", h.getTokens)
 	mux.HandleFunc("GET /v1/addresses/{address}/transactions", h.getTransactions)
+	mux.HandleFunc("GET /openapi.json", serveOpenAPISpec)
+	mux.HandleFunc("GET /docs", serveDocs)
 	return mux
 }
