@@ -33,6 +33,9 @@ func TestLoadFromAppliesDefaults(t *testing.T) {
 	if cfg.LifiRefresh != 3600*time.Second {
 		t.Errorf("lifi refresh = %v, want 3600s", cfg.LifiRefresh)
 	}
+	if cfg.RedisURL != "redis://localhost:6379/0" {
+		t.Errorf("redis url = %q, want redis://localhost:6379/0", cfg.RedisURL)
+	}
 }
 
 func TestLoadFromHonoursOverrides(t *testing.T) {
