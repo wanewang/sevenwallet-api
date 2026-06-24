@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"wallet-api/internal/lifi"
 	"wallet-api/internal/wallet"
 )
 
@@ -190,4 +191,37 @@ func derefStr(p *string) string {
 		return ""
 	}
 	return *p
+}
+
+// SaveTokenList upserts the full LI.FI token list for a chain as one JSONB blob.
+func (s *Postgres) SaveTokenList(ctx context.Context, chain string, tokens []lifi.ListToken, fetchedAt time.Time) error {
+	payload, err := json.Marshal(tokens)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO lifi_token_lists (chain, payload, fetched_at)
+		VALUES ($1,$2,$3)
+		ON CONFLICT (chain) DO UPDATE SET payload=EXCLUDED.payload, fetched_at=EXCLUDED.fetched_at`,
+		chain, payload, fetchedAt)
+	return err
+}
+
+// LoadTokenList returns the stored token list for a chain, if present.
+func (s *Postgres) LoadTokenList(ctx context.Context, chain string) ([]lifi.ListToken, time.Time, bool, error) {
+	var payload []byte
+	var fetchedAt time.Time
+	err := s.pool.QueryRow(ctx, `SELECT payload, fetched_at FROM lifi_token_lists WHERE chain=$1`, chain).
+		Scan(&payload, &fetchedAt)
+	if err == pgx.ErrNoRows {
+		return nil, time.Time{}, false, nil
+	}
+	if err != nil {
+		return nil, time.Time{}, false, err
+	}
+	var tokens []lifi.ListToken
+	if err := json.Unmarshal(payload, &tokens); err != nil {
+		return nil, time.Time{}, false, err
+	}
+	return tokens, fetchedAt, true, nil
 }

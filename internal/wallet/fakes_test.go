@@ -2,9 +2,11 @@ package wallet
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"wallet-api/internal/alchemy"
+	"wallet-api/internal/lifi"
 )
 
 // fakeAlchemy returns canned data and records call counts.
@@ -72,4 +74,19 @@ func (c *fakeTxCache) SaveTransactions(ctx context.Context, address, params stri
 	c.saveCalls++
 	c.saved = page
 	return nil
+}
+
+// fakeAllowlist is an in-memory Allowlist for tests.
+type fakeAllowlist struct {
+	byAddr  map[string]lifi.ListToken
+	symbols map[string]bool
+}
+
+func (f *fakeAllowlist) LookupByAddress(addr string) (lifi.ListToken, bool) {
+	t, ok := f.byAddr[strings.ToLower(addr)]
+	return t, ok
+}
+
+func (f *fakeAllowlist) HasSymbol(sym string) bool {
+	return f.symbols[strings.ToUpper(sym)]
 }

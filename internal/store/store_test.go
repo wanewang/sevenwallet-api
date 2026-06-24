@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"wallet-api/internal/lifi"
 	"wallet-api/internal/wallet"
 )
 
@@ -25,7 +26,7 @@ func newTestStore(t *testing.T) *Postgres {
 		t.Fatalf("Migrate: %v", err)
 	}
 	// Clean slate.
-	_, _ = s.pool.Exec(ctx, "TRUNCATE wallet_tokens, token_fetch_meta, tx_cache")
+	_, _ = s.pool.Exec(ctx, "TRUNCATE wallet_tokens, token_fetch_meta, tx_cache, lifi_token_lists")
 	t.Cleanup(s.Close)
 	return s
 }
@@ -149,5 +150,42 @@ func TestSaveAndGetFreshTransactions(t *testing.T) {
 	}
 	if len(got.Transfers) != 1 || got.Transfers[0].Hash != "0x1" {
 		t.Errorf("round-trip wrong: %+v", got)
+	}
+}
+
+func TestSaveAndLoadTokenList(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if _, _, ok, err := s.LoadTokenList(ctx, "ETH"); err != nil || ok {
+		t.Fatalf("empty load: ok=%v err=%v", ok, err)
+	}
+
+	fetched := time.Now().UTC().Truncate(time.Second)
+	tokens := []lifi.ListToken{
+		{Address: "0xA0B8", Symbol: "USDC", Name: "USD Coin", Decimals: 6, CoinKey: "USDC", LogoURI: "u", PriceUSD: "1.00"},
+		{Address: "0xdAC1", Symbol: "USDT", Name: "Tether", Decimals: 6},
+	}
+	if err := s.SaveTokenList(ctx, "ETH", tokens, fetched); err != nil {
+		t.Fatalf("SaveTokenList: %v", err)
+	}
+	got, gotAt, ok, err := s.LoadTokenList(ctx, "ETH")
+	if err != nil || !ok {
+		t.Fatalf("LoadTokenList ok=%v err=%v", ok, err)
+	}
+	if len(got) != 2 || got[0].Symbol != "USDC" || got[0].Decimals != 6 || got[0].PriceUSD != "1.00" {
+		t.Errorf("round-trip wrong: %+v", got)
+	}
+	if !gotAt.Equal(fetched) {
+		t.Errorf("fetchedAt = %v, want %v", gotAt, fetched)
+	}
+
+	// Upsert replaces the blob for the same chain.
+	if err := s.SaveTokenList(ctx, "ETH", tokens[:1], fetched); err != nil {
+		t.Fatalf("SaveTokenList upsert: %v", err)
+	}
+	got, _, _, _ = s.LoadTokenList(ctx, "ETH")
+	if len(got) != 1 {
+		t.Errorf("upsert did not replace: got %d tokens, want 1", len(got))
 	}
 }

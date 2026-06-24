@@ -30,3 +30,9 @@ CREATE TABLE IF NOT EXISTS tx_cache (
     fetched_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (address, params)
 );
+
+CREATE TABLE IF NOT EXISTS lifi_token_lists (
+    chain      TEXT PRIMARY KEY,
+    payload    JSONB       NOT NULL,
+    fetched_at TIMESTAMPTZ NOT NULL
+);
