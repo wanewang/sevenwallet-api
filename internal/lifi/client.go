@@ -43,8 +43,14 @@ type tokensResponse struct {
 
 // GetTokens fetches the token list for the given chain (e.g. "ETH").
 func (c *Client) GetTokens(ctx context.Context, chain string) ([]ListToken, error) {
-	u := fmt.Sprintf("%s?chain=%s", c.tokensURL, url.QueryEscape(chain))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	base, err := url.Parse(c.tokensURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse lifi url: %w", err)
+	}
+	q := base.Query()
+	q.Set("chain", chain)
+	base.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -62,12 +68,11 @@ func (c *Client) GetTokens(ctx context.Context, chain string) ([]ListToken, erro
 	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
 		return nil, fmt.Errorf("decode lifi response: %w", err)
 	}
-	// Prefer the mapped chain id; fall back to flattening all returned chains.
+	// Known chain: return its slice directly (may be nil/empty — that is valid).
 	if id, ok := chainIDs[strings.ToUpper(chain)]; ok {
-		if tokens := resp.Tokens[id]; len(tokens) > 0 {
-			return tokens, nil
-		}
+		return resp.Tokens[id], nil
 	}
+	// Unknown chain: flatten all returned chains.
 	var all []ListToken
 	for _, v := range resp.Tokens {
 		all = append(all, v...)

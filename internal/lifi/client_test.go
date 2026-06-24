@@ -43,3 +43,19 @@ func TestGetTokensNon2xxErrors(t *testing.T) {
 		t.Fatal("expected error on non-2xx status")
 	}
 }
+
+func TestGetTokensFlattensUnknownChain(t *testing.T) {
+	const body = `{"tokens":{"137":[{"address":"0xaaa","symbol":"AAA","decimals":18}],"10":[{"address":"0xbbb","symbol":"BBB","decimals":18}]}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	tokens, err := New(srv.URL).GetTokens(context.Background(), "DAI")
+	if err != nil {
+		t.Fatalf("GetTokens: %v", err)
+	}
+	if len(tokens) != 2 {
+		t.Fatalf("expected 2 tokens flattened across chains, got %d", len(tokens))
+	}
+}
