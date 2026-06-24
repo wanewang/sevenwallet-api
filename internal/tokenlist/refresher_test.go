@@ -170,3 +170,38 @@ func TestRefreshEmptyFetchKeepsPriorSnapshot(t *testing.T) {
 		t.Errorf("empty fetch must not persist: redis saveCalls=%d pg saveCalls=%d", redis.saveCalls, pg.saveCalls)
 	}
 }
+
+func TestBootstrapEmptyRedisFallsBackToPostgres(t *testing.T) {
+	// Fetch fails; Redis reports present (ok=true) but with zero tokens;
+	// Postgres has a real list. Bootstrap must skip the empty Redis list.
+	l := &fakeLifi{err: errors.New("lifi down")}
+	redis := &fakeStore{present: true, tokens: nil} // ok=true, empty
+	pg := &fakeStore{present: true, tokens: oneToken, fetchedAt: time.Now()}
+	var h Holder
+	r := newRefresherForTest(l, redis, pg, &h)
+
+	if err := r.Bootstrap(context.Background()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	if h.Current() == nil || h.Current().Count() != 1 {
+		t.Errorf("expected snapshot from postgres (count 1), got %v", h.Current())
+	}
+}
+
+func TestBootstrapAllStoresPresentButEmptyReturnsError(t *testing.T) {
+	// Fetch fails; both stores report present (ok=true) but empty. There is no
+	// usable list anywhere, so Bootstrap must error and leave the holder unset
+	// rather than installing an all-hiding empty snapshot.
+	l := &fakeLifi{err: errors.New("lifi down")}
+	redis := &fakeStore{present: true, tokens: nil}
+	pg := &fakeStore{present: true, tokens: []lifi.ListToken{}}
+	var h Holder
+	r := newRefresherForTest(l, redis, pg, &h)
+
+	if err := r.Bootstrap(context.Background()); err == nil {
+		t.Fatal("expected error when every source is empty")
+	}
+	if h.Current() != nil {
+		t.Errorf("holder must stay unset when no non-empty list exists, got %v", h.Current())
+	}
+}

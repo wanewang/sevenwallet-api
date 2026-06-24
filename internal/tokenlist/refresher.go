@@ -41,7 +41,9 @@ func NewRefresher(client LifiClient, redis, pg Store, holder *Holder, chain stri
 }
 
 // Bootstrap loads an initial snapshot before serving: fetch LI.FI, else Redis,
-// else Postgres. Returns an error only if no source has a list.
+// else Postgres. A source that yields zero tokens is skipped (an empty list
+// would hide every token), so Bootstrap returns an error only if no source has
+// a non-empty list.
 func (r *Refresher) Bootstrap(ctx context.Context) error {
 	if tokens, err := r.client.GetTokens(ctx, r.chain); err != nil {
 		r.logf("tokenlist: bootstrap fetch failed: %v", err)
@@ -55,17 +57,21 @@ func (r *Refresher) Bootstrap(ctx context.Context) error {
 	}
 	if tokens, fetchedAt, ok, err := r.redis.LoadTokenList(ctx, r.chain); err != nil {
 		r.logf("tokenlist: redis load failed during bootstrap: %v", err)
-	} else if ok {
+	} else if ok && len(tokens) > 0 {
 		r.logf("tokenlist: bootstrapped from redis (%d tokens)", len(tokens))
 		r.holder.Set(NewSnapshot(r.chain, tokens, fetchedAt))
 		return nil
+	} else if ok {
+		r.logf("tokenlist: redis list present but empty, falling back")
 	}
 	if tokens, fetchedAt, ok, err := r.pg.LoadTokenList(ctx, r.chain); err != nil {
 		r.logf("tokenlist: postgres load failed during bootstrap: %v", err)
-	} else if ok {
+	} else if ok && len(tokens) > 0 {
 		r.logf("tokenlist: bootstrapped from postgres (%d tokens)", len(tokens))
 		r.holder.Set(NewSnapshot(r.chain, tokens, fetchedAt))
 		return nil
+	} else if ok {
+		r.logf("tokenlist: postgres list present but empty, falling back")
 	}
 	return fmt.Errorf("token list unavailable from lifi, redis, and postgres")
 }
