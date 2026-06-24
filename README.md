@@ -30,6 +30,8 @@ The spec is generated from handler annotations — regenerate it with:
     make docs        # regenerate internal/apidocs/ and docs/api/openapi.json
     make docs-check  # CI guard: fails if the committed spec is stale
 
+After cloning, run `make hooks` once to install a pre-commit hook that regenerates and stages the spec automatically when you change a handler annotation or a `wallet` type.
+
 ## Configuration
 
 Set via environment variables:
