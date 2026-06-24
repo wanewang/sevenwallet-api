@@ -53,6 +53,7 @@ var oneToken = []lifi.ListToken{{Address: "0xA0B8", Symbol: "USDC", Decimals: 6}
 func newRefresherForTest(l LifiClient, redis, pg Store, h *Holder) *Refresher {
 	r := NewRefresher(l, redis, pg, h, "ETH", time.Hour)
 	r.now = func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
+	r.logf = func(string, ...any) {}
 	return r
 }
 

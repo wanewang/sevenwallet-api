@@ -51,12 +51,16 @@ func (r *Refresher) Bootstrap(ctx context.Context) error {
 	} else {
 		r.logf("tokenlist: bootstrap fetch failed: %v", err)
 	}
-	if tokens, fetchedAt, ok, err := r.redis.LoadTokenList(ctx, r.chain); err == nil && ok {
+	if tokens, fetchedAt, ok, err := r.redis.LoadTokenList(ctx, r.chain); err != nil {
+		r.logf("tokenlist: redis load failed during bootstrap: %v", err)
+	} else if ok {
 		r.logf("tokenlist: bootstrapped from redis (%d tokens)", len(tokens))
 		r.holder.Set(NewSnapshot(r.chain, tokens, fetchedAt))
 		return nil
 	}
-	if tokens, fetchedAt, ok, err := r.pg.LoadTokenList(ctx, r.chain); err == nil && ok {
+	if tokens, fetchedAt, ok, err := r.pg.LoadTokenList(ctx, r.chain); err != nil {
+		r.logf("tokenlist: postgres load failed during bootstrap: %v", err)
+	} else if ok {
 		r.logf("tokenlist: bootstrapped from postgres (%d tokens)", len(tokens))
 		r.holder.Set(NewSnapshot(r.chain, tokens, fetchedAt))
 		return nil
