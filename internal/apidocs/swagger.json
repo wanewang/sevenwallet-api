@@ -1,0 +1,243 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "Read-only, non-custodial EVM wallet API (token portfolio + transaction history), allowlist-filtered via LI.FI.",
+        "title": "wallet-api",
+        "contact": {},
+        "version": "1.0.0"
+    },
+    "basePath": "/v1",
+    "paths": {
+        "/addresses/{address}/tokens": {
+            "get": {
+                "description": "Native + ERC-20 holdings for an address, filtered to the LI.FI allowlist and enriched with metadata.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "addresses"
+                ],
+                "summary": "Token portfolio",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "0x-prefixed 20-byte hex address",
+                        "name": "address",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/wallet-api_internal_wallet.TokenPortfolio"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/addresses/{address}/transactions": {
+            "get": {
+                "description": "Asset transfers for an address (paginated), filtered to the LI.FI allowlist.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "addresses"
+                ],
+                "summary": "Transaction history",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "0x-prefixed 20-byte hex address",
+                        "name": "address",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "page size (default 25, max 100)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "opaque pagination cursor",
+                        "name": "pageKey",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/wallet-api_internal_wallet.TransactionPage"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "internal_api.ErrorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                }
+            }
+        },
+        "wallet-api_internal_wallet.Price": {
+            "type": "object",
+            "properties": {
+                "currency": {
+                    "type": "string"
+                },
+                "lastUpdatedAt": {
+                    "type": "string"
+                },
+                "value": {
+                    "type": "string"
+                }
+            }
+        },
+        "wallet-api_internal_wallet.Token": {
+            "type": "object",
+            "properties": {
+                "balance": {
+                    "type": "string"
+                },
+                "coinKey": {
+                    "type": "string"
+                },
+                "decimals": {
+                    "type": "integer"
+                },
+                "isNative": {
+                    "type": "boolean"
+                },
+                "logoURI": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "price": {
+                    "$ref": "#/definitions/wallet-api_internal_wallet.Price"
+                },
+                "priceUSD": {
+                    "type": "string"
+                },
+                "rawBalance": {
+                    "type": "string"
+                },
+                "symbol": {
+                    "type": "string"
+                },
+                "tokenAddress": {
+                    "type": "string"
+                }
+            }
+        },
+        "wallet-api_internal_wallet.TokenPortfolio": {
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "string"
+                },
+                "fetchedAt": {
+                    "type": "string"
+                },
+                "network": {
+                    "type": "string"
+                },
+                "tokens": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/wallet-api_internal_wallet.Token"
+                    }
+                }
+            }
+        },
+        "wallet-api_internal_wallet.TransactionPage": {
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "string"
+                },
+                "nextPageKey": {
+                    "type": "string"
+                },
+                "transfers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/wallet-api_internal_wallet.Transfer"
+                    }
+                }
+            }
+        },
+        "wallet-api_internal_wallet.Transfer": {
+            "type": "object",
+            "properties": {
+                "asset": {
+                    "type": "string"
+                },
+                "blockNum": {
+                    "type": "string"
+                },
+                "category": {
+                    "type": "string"
+                },
+                "from": {
+                    "type": "string"
+                },
+                "hash": {
+                    "type": "string"
+                },
+                "to": {
+                    "type": "string"
+                },
+                "value": {
+                    "type": "string"
+                }
+            }
+        }
+    }
+}

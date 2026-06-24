@@ -29,6 +29,18 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
+// getTokens returns an address's allowlist-filtered, enriched token portfolio.
+//
+// @Summary      Token portfolio
+// @Description  Native + ERC-20 holdings for an address, filtered to the LI.FI allowlist and enriched with metadata.
+// @Tags         addresses
+// @Produce      json
+// @Param        address  path      string  true  "0x-prefixed 20-byte hex address"
+// @Success      200      {object}  wallet.TokenPortfolio
+// @Failure      400      {object}  api.ErrorResponse
+// @Failure      502      {object}  api.ErrorResponse
+// @Failure      503      {object}  api.ErrorResponse
+// @Router       /addresses/{address}/tokens [get]
 func (h *handlers) getTokens(w http.ResponseWriter, r *http.Request) {
 	address := r.PathValue("address")
 	if !ValidAddress(address) {
@@ -43,6 +55,20 @@ func (h *handlers) getTokens(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p)
 }
 
+// getTransactions returns a page of an address's allowlist-filtered transfer history.
+//
+// @Summary      Transaction history
+// @Description  Asset transfers for an address (paginated), filtered to the LI.FI allowlist.
+// @Tags         addresses
+// @Produce      json
+// @Param        address  path      string  true   "0x-prefixed 20-byte hex address"
+// @Param        limit    query     int     false  "page size (default 25, max 100)"
+// @Param        pageKey  query     string  false  "opaque pagination cursor"
+// @Success      200      {object}  wallet.TransactionPage
+// @Failure      400      {object}  api.ErrorResponse
+// @Failure      502      {object}  api.ErrorResponse
+// @Failure      503      {object}  api.ErrorResponse
+// @Router       /addresses/{address}/transactions [get]
 func (h *handlers) getTransactions(w http.ResponseWriter, r *http.Request) {
 	address := r.PathValue("address")
 	if !ValidAddress(address) {

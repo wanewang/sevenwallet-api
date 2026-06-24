@@ -20,6 +20,10 @@ import (
 // resets it, so the list survives up to 24 h of consecutive refresher failures.
 const redisTokenListTTL = 24 * time.Hour
 
+// @title        wallet-api
+// @version      1.0.0
+// @description  Read-only, non-custodial EVM wallet API (token portfolio + transaction history), allowlist-filtered via LI.FI.
+// @BasePath     /v1
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
