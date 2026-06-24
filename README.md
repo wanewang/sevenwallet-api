@@ -16,6 +16,20 @@ read-through (cache-first) strategy and a configurable TTL.
 
 `{address}` must be a `0x`-prefixed 20-byte hex address.
 
+## API documentation
+
+Interactive reference (Redoc) is served by the running app:
+
+- `GET /docs` — rendered API reference
+- `GET /openapi.json` — the OpenAPI 2.0 spec
+
+A static copy is published under `docs/api/` (suitable for GitHub Pages).
+
+The spec is generated from handler annotations — regenerate it with:
+
+    make docs        # regenerate internal/apidocs/ and docs/api/openapi.json
+    make docs-check  # CI guard: fails if the committed spec is stale
+
 ## Configuration
 
 Set via environment variables:
