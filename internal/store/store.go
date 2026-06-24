@@ -61,7 +61,9 @@ func (s *Postgres) SaveTokens(ctx context.Context, p *wallet.TokenPortfolio) err
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	// Roll back with a fresh context so a canceled/timed-out request ctx can't
+	// abort the ROLLBACK and force the pool to discard the connection.
+	defer tx.Rollback(context.Background())
 
 	if _, err := tx.Exec(ctx, `DELETE FROM wallet_tokens WHERE address=$1 AND network=$2`, address, p.Network); err != nil {
 		return err

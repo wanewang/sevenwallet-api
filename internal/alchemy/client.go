@@ -138,13 +138,13 @@ type rpcRequest struct {
 type transfersResponse struct {
 	Result struct {
 		Transfers []struct {
-			Hash     string   `json:"hash"`
-			From     string   `json:"from"`
-			To       string   `json:"to"`
-			Asset    string   `json:"asset"`
-			Value    *float64 `json:"value"`
-			BlockNum string   `json:"blockNum"`
-			Category string   `json:"category"`
+			Hash     string      `json:"hash"`
+			From     string      `json:"from"`
+			To       string      `json:"to"`
+			Asset    string      `json:"asset"`
+			Value    json.Number `json:"value"`
+			BlockNum string      `json:"blockNum"`
+			Category string      `json:"category"`
 		} `json:"transfers"`
 		PageKey string `json:"pageKey"`
 	} `json:"result"`
@@ -193,13 +193,9 @@ func (c *Client) fetchTransfers(ctx context.Context, direction, address string, 
 	}
 	out := make([]Transfer, 0, len(resp.Result.Transfers))
 	for _, t := range resp.Result.Transfers {
-		value := ""
-		if t.Value != nil {
-			value = strconv.FormatFloat(*t.Value, 'f', -1, 64)
-		}
 		out = append(out, Transfer{
 			Hash: t.Hash, From: t.From, To: t.To, Asset: t.Asset,
-			Value: value, BlockNum: t.BlockNum, Category: t.Category,
+			Value: t.Value.String(), BlockNum: t.BlockNum, Category: t.Category,
 		})
 	}
 	return out, nil
