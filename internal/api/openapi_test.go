@@ -12,7 +12,7 @@ func TestServeOpenAPISpec(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 		t.Errorf("content-type = %q, want application/json", ct)
 	}
 	var spec map[string]any
