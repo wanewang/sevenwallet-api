@@ -16,8 +16,8 @@ import (
 	"wallet-api/internal/wallet"
 )
 
-// redisTokenListTTL is the safety TTL for the cached list; longer than the
-// refresh interval so a present-but-stale list survives refresher hiccups.
+// redisTokenListTTL is the safety TTL for the cached list. Each successful refresh
+// resets it, so the list survives up to 24 h of consecutive refresher failures.
 const redisTokenListTTL = 24 * time.Hour
 
 func main() {

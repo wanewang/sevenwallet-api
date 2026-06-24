@@ -47,15 +47,15 @@ go run ./cmd/server             # migrates schema, then listens on :8080
 ## Layout
 
 ```
-cmd/server      entrypoint
-internal/api      HTTP router & handlers
-internal/wallet   domain service (portfolio, transactions)
-internal/alchemy  Alchemy client
-internal/store    Postgres store & schema
-internal/config   env-based configuration
-internal/lifi       LI.FI token-list client
-internal/tokenlist  allowlist snapshot + hourly refresher
-internal/rediscache Redis token-list cache
+cmd/server           entrypoint
+internal/api         HTTP router & handlers
+internal/wallet      domain service (portfolio, transactions)
+internal/alchemy     Alchemy client
+internal/store       Postgres store & schema
+internal/config      env-based configuration
+internal/lifi        LI.FI token-list client
+internal/tokenlist   allowlist snapshot + hourly refresher
+internal/rediscache  Redis token-list cache
 ```
 
 Run the tests with `go test ./...`.

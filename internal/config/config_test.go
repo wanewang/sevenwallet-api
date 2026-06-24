@@ -96,3 +96,15 @@ func TestLoadFromRejectsBadRefresh(t *testing.T) {
 		t.Fatal("expected error for non-positive LIFI_REFRESH_SECONDS")
 	}
 }
+
+func TestLoadFromRejectsNonIntegerRefresh(t *testing.T) {
+	env := map[string]string{
+		"ALCHEMY_API_KEY":      "key123",
+		"DATABASE_URL":         "postgres://db",
+		"REDIS_URL":            "redis://localhost:6379",
+		"LIFI_REFRESH_SECONDS": "abc",
+	}
+	if _, err := loadFrom(func(k string) string { return env[k] }); err == nil {
+		t.Fatal("expected error for non-integer LIFI_REFRESH_SECONDS")
+	}
+}

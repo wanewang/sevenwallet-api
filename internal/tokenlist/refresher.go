@@ -43,13 +43,15 @@ func NewRefresher(client LifiClient, redis, pg Store, holder *Holder, chain stri
 // Bootstrap loads an initial snapshot before serving: fetch LI.FI, else Redis,
 // else Postgres. Returns an error only if no source has a list.
 func (r *Refresher) Bootstrap(ctx context.Context) error {
-	if tokens, err := r.client.GetTokens(ctx, r.chain); err == nil {
+	if tokens, err := r.client.GetTokens(ctx, r.chain); err != nil {
+		r.logf("tokenlist: bootstrap fetch failed: %v", err)
+	} else if len(tokens) == 0 {
+		r.logf("tokenlist: bootstrap fetch returned 0 tokens, falling back")
+	} else {
 		now := r.now()
 		r.persist(ctx, tokens, now)
 		r.holder.Set(NewSnapshot(r.chain, tokens, now))
 		return nil
-	} else {
-		r.logf("tokenlist: bootstrap fetch failed: %v", err)
 	}
 	if tokens, fetchedAt, ok, err := r.redis.LoadTokenList(ctx, r.chain); err != nil {
 		r.logf("tokenlist: redis load failed during bootstrap: %v", err)
@@ -82,11 +84,15 @@ func (r *Refresher) Run(ctx context.Context) {
 	}
 }
 
-// refresh fetches once and swaps the snapshot; on fetch error it keeps the prior one.
+// refresh fetches once and swaps the snapshot; on fetch error or empty result it keeps the prior one.
 func (r *Refresher) refresh(ctx context.Context) {
 	tokens, err := r.client.GetTokens(ctx, r.chain)
 	if err != nil {
 		r.logf("tokenlist: refresh failed, keeping prior snapshot: %v", err)
+		return
+	}
+	if len(tokens) == 0 {
+		r.logf("tokenlist: refresh returned 0 tokens, keeping prior snapshot")
 		return
 	}
 	now := r.now()

@@ -128,3 +128,45 @@ func TestRefreshRetainsPriorSnapshotOnError(t *testing.T) {
 		t.Error("failed refresh must keep the prior snapshot")
 	}
 }
+
+func TestBootstrapEmptyFetchFallsBackToStore(t *testing.T) {
+	// fakeLifi returns empty slice (no error); redis has a non-empty list.
+	l := &fakeLifi{tokens: nil}
+	redis := &fakeStore{tokens: oneToken, fetchedAt: time.Now(), present: true}
+	pg := &fakeStore{}
+	var h Holder
+	r := newRefresherForTest(l, redis, pg, &h)
+
+	if err := r.Bootstrap(context.Background()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	if h.Current() == nil || h.Current().Count() != 1 {
+		t.Errorf("expected snapshot from redis, got count=%d", func() int {
+			if h.Current() == nil {
+				return -1
+			}
+			return h.Current().Count()
+		}())
+	}
+	// Empty fetch must NOT have written to any store.
+	if redis.saveCalls != 0 || pg.saveCalls != 0 {
+		t.Errorf("empty fetch must not persist: redis saveCalls=%d pg saveCalls=%d", redis.saveCalls, pg.saveCalls)
+	}
+}
+
+func TestRefreshEmptyFetchKeepsPriorSnapshot(t *testing.T) {
+	var h Holder
+	h.Set(NewSnapshot("ETH", oneToken, time.Now()))
+	prior := h.Current()
+
+	redis, pg := &fakeStore{}, &fakeStore{}
+	r := newRefresherForTest(&fakeLifi{tokens: []lifi.ListToken{}}, redis, pg, &h)
+	r.refresh(context.Background())
+
+	if h.Current() != prior {
+		t.Error("empty fetch must keep the prior snapshot")
+	}
+	if redis.saveCalls != 0 || pg.saveCalls != 0 {
+		t.Errorf("empty fetch must not persist: redis saveCalls=%d pg saveCalls=%d", redis.saveCalls, pg.saveCalls)
+	}
+}
