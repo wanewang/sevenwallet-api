@@ -24,6 +24,11 @@ type handlers struct {
 	svc WalletService
 }
 
+// ErrorResponse is the JSON body returned for any non-2xx response.
+type ErrorResponse struct {
+	Error string `json:"error"`
+}
+
 func (h *handlers) getTokens(w http.ResponseWriter, r *http.Request) {
 	address := r.PathValue("address")
 	if !ValidAddress(address) {
@@ -86,5 +91,5 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+	writeJSON(w, status, ErrorResponse{Error: msg})
 }
