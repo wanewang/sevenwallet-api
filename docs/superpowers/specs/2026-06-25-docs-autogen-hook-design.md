@@ -30,7 +30,7 @@ remains the hard enforcement backstop.
 
 ## Background
 
-`make docs` (on the `feature/api-docs` base) regenerates
+`make docs` regenerates
 `internal/apidocs/swagger.{json,yaml}` and copies the JSON to
 `docs/api/openapi.json`. `make docs-check` regenerates and `git diff --exit-code`s
 to fail on drift; it runs in CI. The OpenAPI spec is generated from swaggo
