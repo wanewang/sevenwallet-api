@@ -106,7 +106,7 @@ touches cmd/server/main.go | internal/api/handlers.go | internal/wallet/*.go ?
    │ yes                                        │ no
    ▼                                            ▼
 make docs -> regenerate spec                 skip (no swag run)
-   │  stage_fixed: true
+   │  explicit git add of generated spec paths
    ▼
 regenerated swagger.json/yaml + openapi.json staged into the commit
 ```
