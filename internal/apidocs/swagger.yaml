@@ -1,0 +1,170 @@
+basePath: /v1
+definitions:
+  internal_api.ErrorResponse:
+    properties:
+      error:
+        type: string
+    type: object
+  wallet-api_internal_wallet.Price:
+    properties:
+      currency:
+        type: string
+      lastUpdatedAt:
+        type: string
+      value:
+        type: string
+    type: object
+  wallet-api_internal_wallet.Token:
+    properties:
+      balance:
+        type: string
+      coinKey:
+        type: string
+      decimals:
+        type: integer
+      isNative:
+        type: boolean
+      logoURI:
+        type: string
+      name:
+        type: string
+      price:
+        $ref: '#/definitions/wallet-api_internal_wallet.Price'
+      priceUSD:
+        type: string
+      rawBalance:
+        type: string
+      symbol:
+        type: string
+      tokenAddress:
+        type: string
+    type: object
+  wallet-api_internal_wallet.TokenPortfolio:
+    properties:
+      address:
+        type: string
+      fetchedAt:
+        type: string
+      network:
+        type: string
+      tokens:
+        items:
+          $ref: '#/definitions/wallet-api_internal_wallet.Token'
+        type: array
+    type: object
+  wallet-api_internal_wallet.TransactionPage:
+    properties:
+      address:
+        type: string
+      nextPageKey:
+        type: string
+      transfers:
+        items:
+          $ref: '#/definitions/wallet-api_internal_wallet.Transfer'
+        type: array
+    type: object
+  wallet-api_internal_wallet.Transfer:
+    properties:
+      asset:
+        type: string
+      blockNum:
+        type: string
+      category:
+        type: string
+      from:
+        type: string
+      hash:
+        type: string
+      to:
+        type: string
+      value:
+        type: string
+    type: object
+info:
+  contact: {}
+  description: Read-only, non-custodial EVM wallet API (token portfolio + transaction
+    history), allowlist-filtered via LI.FI.
+  title: wallet-api
+  version: 1.0.0
+paths:
+  /addresses/{address}/tokens:
+    get:
+      description: Native + ERC-20 holdings for an address, filtered to the LI.FI
+        allowlist and enriched with metadata.
+      parameters:
+      - description: 0x-prefixed 20-byte hex address
+        in: path
+        name: address
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/wallet-api_internal_wallet.TokenPortfolio'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "502":
+          description: Bad Gateway
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      summary: Token portfolio
+      tags:
+      - addresses
+  /addresses/{address}/transactions:
+    get:
+      description: Asset transfers for an address (paginated), filtered to the LI.FI
+        allowlist.
+      parameters:
+      - description: 0x-prefixed 20-byte hex address
+        in: path
+        name: address
+        required: true
+        type: string
+      - description: page size (default 25, max 100)
+        in: query
+        name: limit
+        type: integer
+      - description: opaque pagination cursor
+        in: query
+        name: pageKey
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/wallet-api_internal_wallet.TransactionPage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "502":
+          description: Bad Gateway
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      summary: Transaction history
+      tags:
+      - addresses
+swagger: "2.0"

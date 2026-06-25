@@ -112,6 +112,21 @@ func TestStoreErrorMapsTo503(t *testing.T) {
 	}
 }
 
+func TestErrorResponseShape(t *testing.T) {
+	svc := &stubService{}
+	rec := doGet(NewRouter(svc), "/v1/addresses/not-an-address/tokens")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	var got ErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if got.Error != "invalid address" {
+		t.Errorf("error = %q, want %q", got.Error, "invalid address")
+	}
+}
+
 func TestValidAddress(t *testing.T) {
 	if !ValidAddress(validAddr) {
 		t.Error("valid address rejected")
