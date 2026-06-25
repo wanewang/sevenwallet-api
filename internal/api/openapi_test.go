@@ -40,7 +40,7 @@ func TestServeDocs(t *testing.T) {
 	if !strings.Contains(body, "/openapi.json") {
 		t.Errorf("docs page does not reference /openapi.json")
 	}
-	if !strings.Contains(body, "redoc") {
-		t.Errorf("docs page does not load redoc")
+	if !strings.Contains(body, "https://cdn.jsdelivr.net/npm/redoc@2.5.3/bundles/redoc.standalone.js") {
+		t.Errorf("docs page does not load the pinned redoc bundle")
 	}
 }
