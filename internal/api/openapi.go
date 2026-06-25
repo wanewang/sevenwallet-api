@@ -16,7 +16,7 @@ const redocHTML = `<!DOCTYPE html>
   </head>
   <body>
     <redoc spec-url="/openapi.json"></redoc>
-    <script src="https://cdn.jsdelivr.net/npm/redoc@2/bundles/redoc.standalone.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/redoc@2.5.3/bundles/redoc.standalone.js"></script>
   </body>
 </html>`
 
