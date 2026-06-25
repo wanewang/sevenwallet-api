@@ -1,0 +1,8 @@
+pre-commit:
+  commands:
+    openapi-docs:
+      glob:
+        - "cmd/server/main.go"
+        - "internal/api/handlers.go"
+        - "internal/wallet/*.go"
+      run: make docs && git add internal/apidocs/swagger.json internal/apidocs/swagger.yaml docs/api/openapi.json

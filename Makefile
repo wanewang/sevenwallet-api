@@ -1,4 +1,4 @@
-.PHONY: docs docs-check
+.PHONY: docs docs-check hooks
 
 # Regenerate the OpenAPI spec from handler annotations and copy it for GitHub Pages.
 docs:
@@ -10,3 +10,7 @@ docs:
 # CI guard: regenerate and fail if the committed spec is stale.
 docs-check: docs
 	git diff --exit-code -- internal/apidocs/swagger.json internal/apidocs/swagger.yaml docs/api/openapi.json
+
+# Install git hooks (lefthook) — run once per clone.
+hooks:
+	go tool lefthook install
