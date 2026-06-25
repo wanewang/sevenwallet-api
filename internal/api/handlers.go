@@ -38,6 +38,7 @@ type ErrorResponse struct {
 // @Param        address  path      string  true  "0x-prefixed 20-byte hex address"
 // @Success      200      {object}  wallet.TokenPortfolio
 // @Failure      400      {object}  api.ErrorResponse
+// @Failure      500      {object}  api.ErrorResponse
 // @Failure      502      {object}  api.ErrorResponse
 // @Failure      503      {object}  api.ErrorResponse
 // @Router       /addresses/{address}/tokens [get]
@@ -66,6 +67,7 @@ func (h *handlers) getTokens(w http.ResponseWriter, r *http.Request) {
 // @Param        pageKey  query     string  false  "opaque pagination cursor"
 // @Success      200      {object}  wallet.TransactionPage
 // @Failure      400      {object}  api.ErrorResponse
+// @Failure      500      {object}  api.ErrorResponse
 // @Failure      502      {object}  api.ErrorResponse
 // @Failure      503      {object}  api.ErrorResponse
 // @Router       /addresses/{address}/transactions [get]
