@@ -1,7 +1,7 @@
 # Auto-regenerate OpenAPI spec on commit (lefthook) — Design
 
 **Date:** 2026-06-25
-**Status:** Approved (design); implementation plan pending
+**Status:** Approved (design); implementation plan available
 
 ## Summary
 
