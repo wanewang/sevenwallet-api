@@ -38,8 +38,7 @@ annotations on `cmd/server/main.go` (general info) and
 `internal/api/handlers.go` (per-endpoint), with response schemas derived from the
 `internal/wallet` types. swag is pinned via the Go 1.24+ `tool` directive.
 
-**Base branch:** this work branches off `feature/api-docs` (PR #4), since `make
-docs` does not yet exist on `main`. It retargets to `main` once #4 merges.
+**Base branch:** main.
 
 ## Components
 
