@@ -69,6 +69,21 @@ type Allowlist interface {
 	HasSymbol(sym string) bool
 }
 
+// Validation is the verdict + enrichment metadata for an unlisted ERC-20.
+type Validation struct {
+	Valid    bool
+	Symbol   string
+	Name     string
+	LogoURI  string
+	Decimals int
+}
+
+// Validator decides whether an unlisted ERC-20 is a legitimate token and
+// supplies enrichment metadata when it is.
+type Validator interface {
+	Validate(ctx context.Context, address string) (Validation, error)
+}
+
 // AlchemyClient is the subset of the Alchemy client the service depends on.
 type AlchemyClient interface {
 	GetTokens(ctx context.Context, address, network string) ([]alchemy.Token, error)

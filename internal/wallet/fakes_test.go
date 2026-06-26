@@ -90,3 +90,18 @@ func (f *fakeAllowlist) LookupByAddress(addr string) (lifi.ListToken, bool) {
 func (f *fakeAllowlist) HasSymbol(sym string) bool {
 	return f.symbols[strings.ToUpper(sym)]
 }
+
+// fakeValidator returns a canned Validation and records call count.
+type fakeValidator struct {
+	result Validation
+	err    error
+	calls  int
+}
+
+func (f *fakeValidator) Validate(ctx context.Context, address string) (Validation, error) {
+	f.calls++
+	return f.result, f.err
+}
+
+// denyValidator drops every unlisted token (preserves pre-Moralis behavior).
+func denyValidator() *fakeValidator { return &fakeValidator{result: Validation{Valid: false}} }
