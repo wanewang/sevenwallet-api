@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"wallet-api/internal/lifi"
+	"wallet-api/internal/tokenvalidity"
 	"wallet-api/internal/wallet"
 )
 
@@ -224,4 +225,38 @@ func (s *Postgres) LoadTokenList(ctx context.Context, chain string) ([]lifi.List
 		return nil, time.Time{}, false, err
 	}
 	return tokens, fetchedAt, true, nil
+}
+
+// GetTokenMeta returns the stored Moralis verdict/metadata for a contract, if
+// present. No TTL filter — freshness is decided by the caller so a stale row can
+// still serve as a fallback.
+func (s *Postgres) GetTokenMeta(ctx context.Context, chain, address string) (tokenvalidity.Record, bool, error) {
+	address = strings.ToLower(address)
+	var r tokenvalidity.Record
+	err := s.pool.QueryRow(ctx, `
+		SELECT possible_spam, verified, symbol, name, logo, decimals, fetched_at
+		FROM token_metadata WHERE chain=$1 AND token_address=$2`, chain, address).
+		Scan(&r.PossibleSpam, &r.Verified, &r.Symbol, &r.Name, &r.Logo, &r.Decimals, &r.FetchedAt)
+	if err == pgx.ErrNoRows {
+		return tokenvalidity.Record{}, false, nil
+	}
+	if err != nil {
+		return tokenvalidity.Record{}, false, err
+	}
+	return r, true, nil
+}
+
+// SaveTokenMeta upserts a Moralis verdict/metadata record (kept permanently).
+func (s *Postgres) SaveTokenMeta(ctx context.Context, chain, address string, r tokenvalidity.Record) error {
+	address = strings.ToLower(address)
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO token_metadata
+		(chain, token_address, possible_spam, verified, symbol, name, logo, decimals, fetched_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		ON CONFLICT (chain, token_address) DO UPDATE SET
+		  possible_spam=EXCLUDED.possible_spam, verified=EXCLUDED.verified,
+		  symbol=EXCLUDED.symbol, name=EXCLUDED.name, logo=EXCLUDED.logo,
+		  decimals=EXCLUDED.decimals, fetched_at=EXCLUDED.fetched_at`,
+		chain, address, r.PossibleSpam, r.Verified, r.Symbol, r.Name, r.Logo, r.Decimals, r.FetchedAt)
+	return err
 }

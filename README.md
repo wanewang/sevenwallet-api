@@ -47,8 +47,12 @@ Set via environment variables:
 | `LIFI_TOKENS_URL` | no | `https://li.quest/v1/tokens` | LI.FI token-list endpoint |
 | `LIFI_CHAIN` | no | `ETH` | LI.FI chain key for the allowlist |
 | `LIFI_REFRESH_SECONDS` | no | `3600` | Allowlist refresh interval (positive integer) |
+| `MORALIS_API_KEY` | yes | — | Moralis API key (spam/metadata for unlisted tokens) |
+| `MORALIS_CHAIN` | no | `eth` | Moralis chain id |
+| `MORALIS_RECHECK_SECONDS` | no | `604800` | Verdict re-check window, ~1 week (positive integer) |
+| `MORALIS_REDIS_TTL_SECONDS` | no | `86400` | Verdict Redis hot-cache TTL, ~1 day (positive integer) |
 
-Responses are filtered to the LI.FI token allowlist: unrecognized ERC-20s are hidden and recognized tokens are enriched with `logoURI`, `coinKey`, and `priceUSD`. The allowlist is fetched at startup and refreshed hourly.
+Responses are filtered to the LI.FI token allowlist: tokens on the allowlist are enriched with `logoURI`, `coinKey`, and `priceUSD`. Unlisted ERC-20s are no longer simply hidden — they are checked against the Moralis API and kept (enriched with Moralis metadata) only if they are not flagged as `possible_spam` and are a `verified_contract`; otherwise they are dropped. The allowlist is fetched at startup and refreshed hourly.
 
 ## Run locally
 

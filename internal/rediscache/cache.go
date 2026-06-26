@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
 	"wallet-api/internal/lifi"
+	"wallet-api/internal/tokenvalidity"
 )
 
 // Cache is a Redis-backed token-list store.
@@ -63,4 +65,33 @@ func (c *Cache) LoadTokenList(ctx context.Context, chain string) ([]lifi.ListTok
 		return nil, time.Time{}, false, err
 	}
 	return p.Tokens, p.FetchedAt, true, nil
+}
+
+func metaKey(chain, address string) string {
+	return "tokenmeta:" + chain + ":" + strings.ToLower(address)
+}
+
+// SaveTokenMeta caches a verdict/metadata record with the given TTL.
+func (c *Cache) SaveTokenMeta(ctx context.Context, chain, address string, r tokenvalidity.Record, ttl time.Duration) error {
+	b, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return c.client.Set(ctx, metaKey(chain, address), b, ttl).Err()
+}
+
+// LoadTokenMeta returns the cached verdict/metadata record, if present.
+func (c *Cache) LoadTokenMeta(ctx context.Context, chain, address string) (tokenvalidity.Record, bool, error) {
+	b, err := c.client.Get(ctx, metaKey(chain, address)).Bytes()
+	if err == redis.Nil {
+		return tokenvalidity.Record{}, false, nil
+	}
+	if err != nil {
+		return tokenvalidity.Record{}, false, err
+	}
+	var r tokenvalidity.Record
+	if err := json.Unmarshal(b, &r); err != nil {
+		return tokenvalidity.Record{}, false, err
+	}
+	return r, true, nil
 }

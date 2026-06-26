@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"wallet-api/internal/lifi"
+	"wallet-api/internal/tokenvalidity"
 	"wallet-api/internal/wallet"
 )
 
@@ -26,7 +27,7 @@ func newTestStore(t *testing.T) *Postgres {
 		t.Fatalf("Migrate: %v", err)
 	}
 	// Clean slate.
-	_, _ = s.pool.Exec(ctx, "TRUNCATE wallet_tokens, token_fetch_meta, tx_cache, lifi_token_lists")
+	_, _ = s.pool.Exec(ctx, "TRUNCATE wallet_tokens, token_fetch_meta, tx_cache, lifi_token_lists, token_metadata")
 	t.Cleanup(s.Close)
 	return s
 }
@@ -187,5 +188,41 @@ func TestSaveAndLoadTokenList(t *testing.T) {
 	got, _, _, _ = s.LoadTokenList(ctx, "ETH")
 	if len(got) != 1 {
 		t.Errorf("upsert did not replace: got %d tokens, want 1", len(got))
+	}
+}
+
+func TestSaveAndGetTokenMeta(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	at := time.Now().UTC().Truncate(time.Second)
+	r := tokenvalidity.Record{PossibleSpam: false, Verified: true, Symbol: "PEPE", Name: "Pepe", Logo: "https://logo/pepe.png", Decimals: 18, FetchedAt: at}
+
+	if _, ok, err := s.GetTokenMeta(ctx, "eth", "0xFEE7"); err != nil || ok {
+		t.Fatalf("empty get: ok=%v err=%v", ok, err)
+	}
+	if err := s.SaveTokenMeta(ctx, "eth", "0xFEE7", r); err != nil {
+		t.Fatalf("SaveTokenMeta: %v", err)
+	}
+	got, ok, err := s.GetTokenMeta(ctx, "eth", "0xFEE7")
+	if err != nil || !ok {
+		t.Fatalf("GetTokenMeta ok=%v err=%v", ok, err)
+	}
+	if got.Symbol != "PEPE" || got.Logo != "https://logo/pepe.png" || got.Decimals != 18 || !got.Verified || got.PossibleSpam {
+		t.Errorf("round-trip wrong: %+v", got)
+	}
+	if !got.FetchedAt.Equal(at) {
+		t.Errorf("fetchedAt = %v, want %v", got.FetchedAt, at)
+	}
+
+	// Upsert overwrites.
+	r2 := r
+	r2.PossibleSpam = true
+	r2.Symbol = "SPAM"
+	if err := s.SaveTokenMeta(ctx, "eth", "0xFEE7", r2); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got2, _, _ := s.GetTokenMeta(ctx, "eth", "0xFEE7")
+	if !got2.PossibleSpam || got2.Symbol != "SPAM" {
+		t.Errorf("upsert did not overwrite: %+v", got2)
 	}
 }

@@ -12,18 +12,19 @@ import (
 
 // Service orchestrates cache-first reads over Alchemy + Postgres.
 type Service struct {
-	alchemy AlchemyClient
-	tokens  TokenStore
-	txs     TxCache
-	allow   Allowlist
-	network string
-	ttl     time.Duration
-	now     func() time.Time
+	alchemy   AlchemyClient
+	tokens    TokenStore
+	txs       TxCache
+	allow     Allowlist
+	validator Validator
+	network   string
+	ttl       time.Duration
+	now       func() time.Time
 }
 
 // NewService builds a Service with a real-time clock.
-func NewService(a AlchemyClient, ts TokenStore, tc TxCache, allow Allowlist, network string, ttl time.Duration) *Service {
-	return &Service{alchemy: a, tokens: ts, txs: tc, allow: allow, network: network, ttl: ttl, now: time.Now}
+func NewService(a AlchemyClient, ts TokenStore, tc TxCache, allow Allowlist, validator Validator, network string, ttl time.Duration) *Service {
+	return &Service{alchemy: a, tokens: ts, txs: tc, allow: allow, validator: validator, network: network, ttl: ttl, now: time.Now}
 }
 
 // GetTokens returns the address's token portfolio, served from the DB snapshot
@@ -33,7 +34,7 @@ func (s *Service) GetTokens(ctx context.Context, address string) (*TokenPortfoli
 	if p, ok, err := s.tokens.GetFreshTokens(ctx, addr, s.network, s.ttl); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrStore, err)
 	} else if ok {
-		return s.filterTokens(p), nil
+		return s.filterTokens(ctx, p), nil
 	}
 	raw, err := s.alchemy.GetTokens(ctx, addr, s.network)
 	if err != nil {
@@ -52,7 +53,7 @@ func (s *Service) GetTokens(ctx context.Context, address string) (*TokenPortfoli
 	if err := s.tokens.SaveTokens(ctx, p); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrStore, err)
 	}
-	return s.filterTokens(p), nil
+	return s.filterTokens(ctx, p), nil
 }
 
 // GetTransactions returns a page of transfer history for address. The first page
@@ -123,10 +124,10 @@ func normalizeTokens(raw []alchemy.Token) ([]Token, error) {
 	return out, nil
 }
 
-// filterTokens drops non-allowlisted ERC-20s and enriches survivors. Native
-// tokens are always kept. A fresh portfolio is returned (the cached/raw one is
-// left untouched).
-func (s *Service) filterTokens(p *TokenPortfolio) *TokenPortfolio {
+// filterTokens keeps native tokens, keeps + enriches LI.FI-listed ERC-20s, and
+// for unlisted ERC-20s consults the Validator: valid tokens are kept + enriched
+// from Moralis metadata, everything else (invalid or error) is dropped.
+func (s *Service) filterTokens(ctx context.Context, p *TokenPortfolio) *TokenPortfolio {
 	out := &TokenPortfolio{Address: p.Address, Network: p.Network, FetchedAt: p.FetchedAt}
 	out.Tokens = make([]Token, 0, len(p.Tokens))
 	for _, t := range p.Tokens {
@@ -134,13 +135,38 @@ func (s *Service) filterTokens(p *TokenPortfolio) *TokenPortfolio {
 			out.Tokens = append(out.Tokens, t)
 			continue
 		}
-		lt, ok := s.allow.LookupByAddress(*t.TokenAddress)
-		if !ok {
+		if lt, ok := s.allow.LookupByAddress(*t.TokenAddress); ok {
+			out.Tokens = append(out.Tokens, enrichToken(t, lt))
 			continue
 		}
-		out.Tokens = append(out.Tokens, enrichToken(t, lt))
+		v, err := s.validator.Validate(ctx, *t.TokenAddress)
+		if err != nil || !v.Valid {
+			continue // fail-closed: invalid or unknown tokens are dropped
+		}
+		out.Tokens = append(out.Tokens, enrichFromValidation(t, v))
 	}
 	return out
+}
+
+// enrichFromValidation overlays Moralis-derived metadata onto t. When decimals
+// change, Balance is re-derived from RawBalance so the scaled value stays correct.
+func enrichFromValidation(t Token, v Validation) Token {
+	if v.Symbol != "" {
+		t.Symbol = v.Symbol
+	}
+	if v.Name != "" {
+		t.Name = v.Name
+	}
+	if v.LogoURI != "" {
+		t.LogoURI = strptr(v.LogoURI)
+	}
+	if v.Decimals > 0 && v.Decimals != t.Decimals {
+		if _, scaled, err := ScaleBalance(t.RawBalance, v.Decimals); err == nil {
+			t.Balance = scaled
+		}
+		t.Decimals = v.Decimals
+	}
+	return t
 }
 
 // enrichToken overlays LI.FI metadata onto t. When decimals change, Balance is
