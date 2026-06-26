@@ -21,15 +21,16 @@ func (f *fakeMoralis) GetTokenMetadata(ctx context.Context, address string) (mor
 }
 
 type fakeCache struct {
-	rec    Record
-	hit    bool
-	saved  int
-	loaded int
+	rec     Record
+	hit     bool
+	saved   int
+	loaded  int
+	loadErr error
 }
 
 func (f *fakeCache) LoadTokenMeta(ctx context.Context, chain, address string) (Record, bool, error) {
 	f.loaded++
-	return f.rec, f.hit, nil
+	return f.rec, f.hit, f.loadErr
 }
 func (f *fakeCache) SaveTokenMeta(ctx context.Context, chain, address string, r Record, ttl time.Duration) error {
 	f.saved++
@@ -38,13 +39,14 @@ func (f *fakeCache) SaveTokenMeta(ctx context.Context, chain, address string, r 
 }
 
 type fakeStore struct {
-	rec   Record
-	hit   bool
-	saved int
+	rec    Record
+	hit    bool
+	saved  int
+	getErr error
 }
 
 func (f *fakeStore) GetTokenMeta(ctx context.Context, chain, address string) (Record, bool, error) {
-	return f.rec, f.hit, nil
+	return f.rec, f.hit, f.getErr
 }
 func (f *fakeStore) SaveTokenMeta(ctx context.Context, chain, address string, r Record) error {
 	f.saved++
@@ -169,5 +171,37 @@ func TestValidateMoralisErrorWithoutRecordFailsClosed(t *testing.T) {
 	}
 	if got.Valid {
 		t.Error("must be invalid when moralis fails and nothing cached")
+	}
+}
+
+func TestValidateCacheReadErrorFallsThroughToStore(t *testing.T) {
+	cache := &fakeCache{loadErr: errors.New("redis down")}
+	store := &fakeStore{hit: true, rec: Record{Verified: true, Symbol: "USDC", FetchedAt: fixedNow.Add(-24 * time.Hour)}}
+	m := &fakeMoralis{}
+	got, err := newChecker(m, cache, store).Validate(context.Background(), "0xABC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Valid || got.Symbol != "USDC" {
+		t.Errorf("expected valid USDC from store tier: %+v", got)
+	}
+	if m.calls != 0 {
+		t.Errorf("cache read error should fall through to store, not moralis; calls=%d", m.calls)
+	}
+}
+
+func TestValidateStoreReadErrorFallsThroughToMoralis(t *testing.T) {
+	cache := &fakeCache{}
+	store := &fakeStore{getErr: errors.New("pg down")}
+	m := &fakeMoralis{meta: moralis.Metadata{VerifiedContract: true, Symbol: "WETH"}}
+	got, err := newChecker(m, cache, store).Validate(context.Background(), "0xABC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Valid {
+		t.Errorf("expected valid result from moralis after store error: %+v", got)
+	}
+	if m.calls != 1 {
+		t.Errorf("store read error should fall through to moralis; calls=%d", m.calls)
 	}
 }
