@@ -37,6 +37,23 @@ func TestGetTokenMetadataParsesFields(t *testing.T) {
 	}
 }
 
+func TestGetTokenMetadataNullLogo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"symbol":"NEW","name":"NewToken","logo":null,"decimals":"6","possible_spam":true,"verified_contract":false}]`))
+	}))
+	defer srv.Close()
+
+	m, err := testClient(srv).GetTokenMetadata(context.Background(), "0xABC")
+	if err != nil {
+		t.Fatalf("GetTokenMetadata: %v", err)
+	}
+	want := Metadata{Symbol: "NEW", Name: "NewToken", Logo: "", Decimals: 6, PossibleSpam: true, VerifiedContract: false}
+	if m != want {
+		t.Errorf("got %+v, want %+v", m, want)
+	}
+}
+
 func TestGetTokenMetadataEmptyArrayIsError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`[]`))
