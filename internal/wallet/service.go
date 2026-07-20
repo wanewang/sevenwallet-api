@@ -163,8 +163,8 @@ func enrichFromValidation(t Token, v Validation) Token {
 	if v.Decimals > 0 && v.Decimals != t.Decimals {
 		if _, scaled, err := ScaleBalance(t.RawBalance, v.Decimals); err == nil {
 			t.Balance = scaled
+			t.Decimals = v.Decimals
 		}
-		t.Decimals = v.Decimals
 	}
 	return t
 }
@@ -190,8 +190,8 @@ func enrichToken(t Token, lt lifi.ListToken) Token {
 	if lt.Decimals > 0 && lt.Decimals != t.Decimals {
 		if _, scaled, err := ScaleBalance(t.RawBalance, lt.Decimals); err == nil {
 			t.Balance = scaled
+			t.Decimals = lt.Decimals
 		}
-		t.Decimals = lt.Decimals
 	}
 	return t
 }

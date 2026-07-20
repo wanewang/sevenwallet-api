@@ -113,6 +113,31 @@ func TestGetTokensRescalesBalanceOnDecimalsOverride(t *testing.T) {
 	}
 }
 
+func TestEnrichTokenKeepsDecimalsWhenRescaleFails(t *testing.T) {
+	// RawBalance is corrupt (e.g. bad DB snapshot), so re-scaling fails: the old
+	// Decimals/Balance pair must be kept rather than mixing old Balance with new
+	// Decimals.
+	in := Token{Symbol: "usdc", Decimals: 18, RawBalance: "corrupt", Balance: "12.5"}
+	got := enrichToken(in, lifi.ListToken{Symbol: "USDC", Decimals: 6})
+	if got.Decimals != 18 {
+		t.Errorf("decimals = %d, want 18 (unchanged when re-scale fails)", got.Decimals)
+	}
+	if got.Balance != "12.5" {
+		t.Errorf("balance = %q, want 12.5 (unchanged)", got.Balance)
+	}
+}
+
+func TestEnrichFromValidationKeepsDecimalsWhenRescaleFails(t *testing.T) {
+	in := Token{Symbol: "new", Decimals: 18, RawBalance: "corrupt", Balance: "12.5"}
+	got := enrichFromValidation(in, Validation{Valid: true, Symbol: "NEW", Decimals: 6})
+	if got.Decimals != 18 {
+		t.Errorf("decimals = %d, want 18 (unchanged when re-scale fails)", got.Decimals)
+	}
+	if got.Balance != "12.5" {
+		t.Errorf("balance = %q, want 12.5 (unchanged)", got.Balance)
+	}
+}
+
 func TestGetTokensCacheHitFiltersCachedSnapshot(t *testing.T) {
 	cached := &TokenPortfolio{Address: "0xabc", Network: "eth-mainnet", Tokens: []Token{
 		{TokenAddress: nil, Symbol: "ETH", Decimals: 18, RawBalance: "0", Balance: "0", IsNative: true},
