@@ -10,9 +10,11 @@ import (
 	"wallet-api/internal/api"
 	"wallet-api/internal/config"
 	"wallet-api/internal/lifi"
+	"wallet-api/internal/moralis"
 	"wallet-api/internal/rediscache"
 	"wallet-api/internal/store"
 	"wallet-api/internal/tokenlist"
+	"wallet-api/internal/tokenvalidity"
 	"wallet-api/internal/wallet"
 )
 
@@ -61,7 +63,9 @@ func main() {
 	log.Printf("token list ready: %d tokens (chain=%s, refresh=%s)", holder.Current().Count(), cfg.LifiChain, cfg.LifiRefresh)
 
 	ac := alchemy.New(cfg.AlchemyAPIKey, cfg.AlchemyNetwork)
-	svc := wallet.NewService(ac, pg, pg, holder, cfg.AlchemyNetwork, cfg.CacheTTL)
+	moralisClient := moralis.New(cfg.MoralisAPIKey, cfg.MoralisChain)
+	validator := tokenvalidity.NewChecker(moralisClient, redisCache, pg, cfg.MoralisChain, cfg.MoralisRecheck, cfg.MoralisRedisTTL)
+	svc := wallet.NewService(ac, pg, pg, holder, validator, cfg.AlchemyNetwork, cfg.CacheTTL)
 	router := api.NewRouter(svc)
 
 	srv := &http.Server{

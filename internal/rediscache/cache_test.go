@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"wallet-api/internal/lifi"
+	"wallet-api/internal/tokenvalidity"
 )
 
 func newTestCache(t *testing.T) *Cache {
@@ -50,5 +51,30 @@ func TestRedisSaveAndLoadTokenList(t *testing.T) {
 	}
 	if !gotAt.Equal(fetched) {
 		t.Errorf("fetchedAt = %v, want %v", gotAt, fetched)
+	}
+}
+
+func TestRedisSaveAndLoadTokenMeta(t *testing.T) {
+	c := newTestCache(t)
+	ctx := context.Background()
+	_, _ = c.client.Del(ctx, metaKey("eth", "0xfee7")).Result()
+
+	if _, ok, err := c.LoadTokenMeta(ctx, "eth", "0xFEE7"); err != nil || ok {
+		t.Fatalf("empty load: ok=%v err=%v", ok, err)
+	}
+	at := time.Now().UTC().Truncate(time.Second)
+	r := tokenvalidity.Record{Verified: true, Symbol: "PEPE", Logo: "L", Decimals: 18, FetchedAt: at}
+	if err := c.SaveTokenMeta(ctx, "eth", "0xFEE7", r, time.Hour); err != nil {
+		t.Fatalf("SaveTokenMeta: %v", err)
+	}
+	got, ok, err := c.LoadTokenMeta(ctx, "eth", "0xFEE7")
+	if err != nil || !ok {
+		t.Fatalf("LoadTokenMeta ok=%v err=%v", ok, err)
+	}
+	if got.Symbol != "PEPE" || got.Logo != "L" || got.Decimals != 18 || !got.Verified {
+		t.Errorf("round-trip wrong: %+v", got)
+	}
+	if !got.FetchedAt.Equal(at) {
+		t.Errorf("fetchedAt = %v, want %v", got.FetchedAt, at)
 	}
 }

@@ -36,3 +36,16 @@ CREATE TABLE IF NOT EXISTS lifi_token_lists (
     payload    JSONB       NOT NULL,
     fetched_at TIMESTAMPTZ NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS token_metadata (
+    chain         TEXT NOT NULL,
+    token_address TEXT NOT NULL,
+    possible_spam BOOLEAN NOT NULL,
+    verified      BOOLEAN NOT NULL,
+    symbol        TEXT NOT NULL DEFAULT '',
+    name          TEXT NOT NULL DEFAULT '',
+    logo          TEXT NOT NULL DEFAULT '',
+    decimals      INTEGER NOT NULL DEFAULT 0,
+    fetched_at    TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (chain, token_address)
+);

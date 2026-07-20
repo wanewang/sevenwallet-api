@@ -9,15 +9,19 @@ import (
 
 // Config holds all runtime configuration, sourced from environment variables.
 type Config struct {
-	AlchemyAPIKey  string
-	AlchemyNetwork string
-	DatabaseURL    string
-	CacheTTL       time.Duration
-	Port           string
-	RedisURL       string
-	LifiTokensURL  string
-	LifiChain      string
-	LifiRefresh    time.Duration
+	AlchemyAPIKey   string
+	AlchemyNetwork  string
+	DatabaseURL     string
+	CacheTTL        time.Duration
+	Port            string
+	RedisURL        string
+	LifiTokensURL   string
+	LifiChain       string
+	LifiRefresh     time.Duration
+	MoralisAPIKey   string
+	MoralisChain    string
+	MoralisRecheck  time.Duration
+	MoralisRedisTTL time.Duration
 }
 
 // Load reads configuration from the process environment.
@@ -75,5 +79,31 @@ func loadFrom(getenv func(string) string) (Config, error) {
 		ttl = n
 	}
 	cfg.CacheTTL = time.Duration(ttl) * time.Second
+	cfg.MoralisAPIKey = getenv("MORALIS_API_KEY")
+	if cfg.MoralisAPIKey == "" {
+		return Config{}, fmt.Errorf("MORALIS_API_KEY is required")
+	}
+	cfg.MoralisChain = getenv("MORALIS_CHAIN")
+	if cfg.MoralisChain == "" {
+		cfg.MoralisChain = "eth"
+	}
+	recheck := 604800
+	if raw := getenv("MORALIS_RECHECK_SECONDS"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			return Config{}, fmt.Errorf("MORALIS_RECHECK_SECONDS must be a positive integer, got %q", raw)
+		}
+		recheck = n
+	}
+	cfg.MoralisRecheck = time.Duration(recheck) * time.Second
+	redisTTL := 86400
+	if raw := getenv("MORALIS_REDIS_TTL_SECONDS"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			return Config{}, fmt.Errorf("MORALIS_REDIS_TTL_SECONDS must be a positive integer, got %q", raw)
+		}
+		redisTTL = n
+	}
+	cfg.MoralisRedisTTL = time.Duration(redisTTL) * time.Second
 	return cfg, nil
 }
