@@ -1,0 +1,9 @@
+#!include:.gitignore
+.git
+.github
+.claude
+docs
+_conf
+*.md
+docker-compose.yml
+lefthook.yml
