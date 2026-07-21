@@ -56,6 +56,37 @@ func (s *Service) GetTokens(ctx context.Context, address string) (*TokenPortfoli
 	return s.filterTokens(ctx, p), nil
 }
 
+// GetNativeTokens returns native ETH metadata and price from the current LI.FI snapshot.
+func (s *Service) GetNativeTokens(_ context.Context) ([]Token, error) {
+	lt, fetchedAt, ok := s.allow.LookupNative()
+	if !ok || strings.TrimSpace(lt.PriceUSD) == "" || fetchedAt.IsZero() {
+		return nil, ErrNativeTokenUnavailable
+	}
+
+	t := Token{
+		TokenAddress: nil,
+		Symbol:       lt.Symbol,
+		Name:         lt.Name,
+		Decimals:     lt.Decimals,
+		RawBalance:   "0",
+		Balance:      "0",
+		IsNative:     true,
+		Price: &Price{
+			Currency:      "usd",
+			Value:         lt.PriceUSD,
+			LastUpdatedAt: fetchedAt.UTC().Format(time.RFC3339),
+		},
+		PriceUSD: strptr(lt.PriceUSD),
+	}
+	if lt.LogoURI != "" {
+		t.LogoURI = strptr(lt.LogoURI)
+	}
+	if lt.CoinKey != "" {
+		t.CoinKey = strptr(lt.CoinKey)
+	}
+	return []Token{t}, nil
+}
+
 // GetTransactions returns a page of transfer history for address. The first page
 // (no pageKey) is served cache-first and written through; pageKey requests bypass
 // the cache.

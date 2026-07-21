@@ -3,6 +3,7 @@ package wallet
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -293,5 +294,97 @@ func TestGetTokensDropsInvalidUnlistedToken(t *testing.T) {
 	}
 	if len(p.Tokens) != 0 {
 		t.Fatalf("expected invalid token dropped, got %d", len(p.Tokens))
+	}
+}
+
+func TestGetNativeTokensMapsLifiToken(t *testing.T) {
+	fetchedAt := time.Date(2026, 7, 22, 20, 30, 0, 0, time.FixedZone("UTC+8", 8*60*60))
+	allow := &fakeAllowlist{
+		native: lifi.ListToken{
+			Address:  "0x0000000000000000000000000000000000000000",
+			Symbol:   "ETH",
+			Name:     "Ethereum",
+			Decimals: 18,
+			CoinKey:  "ETH",
+			LogoURI:  "https://logo/eth.png",
+			PriceUSD: "3200.50",
+		},
+		nativeFetchedAt: fetchedAt,
+		nativeOK:        true,
+	}
+	svc := NewService(&fakeAlchemy{}, &fakeTokenStore{}, &fakeTxCache{}, allow, denyValidator(), "eth-mainnet", time.Minute)
+
+	got, err := svc.GetNativeTokens(context.Background())
+	if err != nil {
+		t.Fatalf("GetNativeTokens: %v", err)
+	}
+	want := []Token{{
+		TokenAddress: nil,
+		Symbol:       "ETH",
+		Name:         "Ethereum",
+		Decimals:     18,
+		RawBalance:   "0",
+		Balance:      "0",
+		IsNative:     true,
+		Price: &Price{
+			Currency:      "usd",
+			Value:         "3200.50",
+			LastUpdatedAt: "2026-07-22T12:30:00Z",
+		},
+		LogoURI:  strptr("https://logo/eth.png"),
+		CoinKey:  strptr("ETH"),
+		PriceUSD: strptr("3200.50"),
+	}}
+	if got == nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("tokens = %+v, want %+v", got, want)
+	}
+}
+
+func TestGetNativeTokensLeavesOptionalMetadataNil(t *testing.T) {
+	allow := &fakeAllowlist{
+		native:          lifi.ListToken{Symbol: "ETH", Name: "Ethereum", Decimals: 18, PriceUSD: "3200.50"},
+		nativeFetchedAt: time.Date(2026, 7, 22, 12, 30, 0, 0, time.UTC),
+		nativeOK:        true,
+	}
+	svc := NewService(&fakeAlchemy{}, &fakeTokenStore{}, &fakeTxCache{}, allow, denyValidator(), "eth-mainnet", time.Minute)
+
+	got, err := svc.GetNativeTokens(context.Background())
+	if err != nil {
+		t.Fatalf("GetNativeTokens: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("token count = %d, want 1", len(got))
+	}
+	if got[0].LogoURI != nil || got[0].CoinKey != nil {
+		t.Errorf("optional metadata should remain nil: %+v", got[0])
+	}
+}
+
+func TestGetNativeTokensUnavailable(t *testing.T) {
+	fetchedAt := time.Date(2026, 7, 22, 12, 30, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		allow *fakeAllowlist
+	}{
+		{name: "missing snapshot or native entry", allow: &fakeAllowlist{}},
+		{name: "empty price", allow: &fakeAllowlist{
+			native: lifi.ListToken{Symbol: "ETH"}, nativeFetchedAt: fetchedAt, nativeOK: true,
+		}},
+		{name: "zero fetch time", allow: &fakeAllowlist{
+			native: lifi.ListToken{Symbol: "ETH", PriceUSD: "3200.50"}, nativeOK: true,
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := NewService(&fakeAlchemy{}, &fakeTokenStore{}, &fakeTxCache{}, tt.allow, denyValidator(), "eth-mainnet", time.Minute)
+			got, err := svc.GetNativeTokens(context.Background())
+			if got != nil {
+				t.Errorf("tokens = %+v, want nil", got)
+			}
+			if !errors.Is(err, ErrNativeTokenUnavailable) {
+				t.Errorf("error = %v, want ErrNativeTokenUnavailable", err)
+			}
+		})
 	}
 }

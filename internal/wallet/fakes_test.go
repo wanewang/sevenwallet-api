@@ -30,11 +30,11 @@ func (f *fakeAlchemy) GetTransfers(ctx context.Context, address string, limit in
 
 // fakeTokenStore is an in-memory TokenStore.
 type fakeTokenStore struct {
-	saved      *TokenPortfolio
-	fresh      bool
-	saveCalls  int
-	getErr     error
-	saveErr    error
+	saved     *TokenPortfolio
+	fresh     bool
+	saveCalls int
+	getErr    error
+	saveErr   error
 }
 
 func (s *fakeTokenStore) GetFreshTokens(ctx context.Context, address, network string, ttl time.Duration) (*TokenPortfolio, bool, error) {
@@ -78,13 +78,20 @@ func (c *fakeTxCache) SaveTransactions(ctx context.Context, address, params stri
 
 // fakeAllowlist is an in-memory Allowlist for tests.
 type fakeAllowlist struct {
-	byAddr  map[string]lifi.ListToken
-	symbols map[string]bool
+	byAddr          map[string]lifi.ListToken
+	symbols         map[string]bool
+	native          lifi.ListToken
+	nativeFetchedAt time.Time
+	nativeOK        bool
 }
 
 func (f *fakeAllowlist) LookupByAddress(addr string) (lifi.ListToken, bool) {
 	t, ok := f.byAddr[strings.ToLower(addr)]
 	return t, ok
+}
+
+func (f *fakeAllowlist) LookupNative() (lifi.ListToken, time.Time, bool) {
+	return f.native, f.nativeFetchedAt, f.nativeOK
 }
 
 func (f *fakeAllowlist) HasSymbol(sym string) bool {

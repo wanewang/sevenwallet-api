@@ -11,8 +11,9 @@ import (
 
 // Sentinel errors let the API layer map failures to HTTP status codes.
 var (
-	ErrUpstream = errors.New("upstream provider error")
-	ErrStore    = errors.New("storage error")
+	ErrUpstream               = errors.New("upstream provider error")
+	ErrStore                  = errors.New("storage error")
+	ErrNativeTokenUnavailable = errors.New("native token data unavailable")
 )
 
 // Price is a single currency price for a token.
@@ -32,9 +33,9 @@ type Token struct {
 	Balance      string  `json:"balance"`
 	IsNative     bool    `json:"isNative"`
 	Price        *Price  `json:"price"`
-	LogoURI  *string `json:"logoURI,omitempty"`
-	CoinKey  *string `json:"coinKey,omitempty"`
-	PriceUSD *string `json:"priceUSD,omitempty"`
+	LogoURI      *string `json:"logoURI,omitempty"`
+	CoinKey      *string `json:"coinKey,omitempty"`
+	PriceUSD     *string `json:"priceUSD,omitempty"`
 }
 
 // TokenPortfolio is the current token snapshot for an address.
@@ -66,6 +67,7 @@ type TransactionPage struct {
 // Allowlist is the LI.FI token allowlist the service filters/enriches against.
 type Allowlist interface {
 	LookupByAddress(addr string) (lifi.ListToken, bool)
+	LookupNative() (lifi.ListToken, time.Time, bool)
 	HasSymbol(sym string) bool
 }
 
