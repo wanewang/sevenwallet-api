@@ -38,6 +38,7 @@ temp/
 
 # Docker and local tooling overrides
 docker-compose.override.yml
+.worktrees/
 
 # macOS
 .DS_Store
