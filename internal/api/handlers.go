@@ -29,6 +29,25 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
+// getNativeTokens returns native ETH metadata and price from the current LI.FI snapshot.
+//
+// @Summary      Native tokens
+// @Description  Native ETH metadata and USD price from the current LI.FI token-list snapshot.
+// @Tags         tokens
+// @Produce      json
+// @Success      200  {array}   wallet.Token
+// @Failure      500  {object}  api.ErrorResponse
+// @Failure      503  {object}  api.ErrorResponse
+// @Router       /native [get]
+func (h *handlers) getNativeTokens(w http.ResponseWriter, r *http.Request) {
+	tokens, err := h.svc.GetNativeTokens(r.Context())
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tokens)
+}
+
 // getTokens returns an address's allowlist-filtered, enriched token portfolio.
 //
 // @Summary      Token portfolio
@@ -103,6 +122,8 @@ func parseLimit(raw string) int {
 
 func writeServiceError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, wallet.ErrNativeTokenUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "native token data unavailable")
 	case errors.Is(err, wallet.ErrUpstream):
 		writeError(w, http.StatusBadGateway, "upstream provider error")
 	case errors.Is(err, wallet.ErrStore):

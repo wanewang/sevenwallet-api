@@ -11,15 +11,19 @@ import (
 )
 
 type stubService struct {
-	portfolio *wallet.TokenPortfolio
-	page      *wallet.TransactionPage
-	err       error
-	lastLimit int
-	lastPage  string
+	portfolio    *wallet.TokenPortfolio
+	page         *wallet.TransactionPage
+	nativeTokens []wallet.Token
+	err          error
+	lastLimit    int
+	lastPage     string
 }
 
 func (s *stubService) GetTokens(ctx context.Context, address string) (*wallet.TokenPortfolio, error) {
 	return s.portfolio, s.err
+}
+func (s *stubService) GetNativeTokens(ctx context.Context) ([]wallet.Token, error) {
+	return s.nativeTokens, s.err
 }
 func (s *stubService) GetTransactions(ctx context.Context, address string, limit int, pageKey string) (*wallet.TransactionPage, error) {
 	s.lastLimit, s.lastPage = limit, pageKey
@@ -135,5 +139,64 @@ func TestValidAddress(t *testing.T) {
 		if ValidAddress(bad) {
 			t.Errorf("invalid address accepted: %q", bad)
 		}
+	}
+}
+
+func TestNativeEndpointOK(t *testing.T) {
+	priceUSD := "3200.50"
+	svc := &stubService{nativeTokens: []wallet.Token{{
+		Symbol:     "ETH",
+		Name:       "Ethereum",
+		Decimals:   18,
+		RawBalance: "0",
+		Balance:    "0",
+		IsNative:   true,
+		Price: &wallet.Price{
+			Currency:      "usd",
+			Value:         "3200.50",
+			LastUpdatedAt: "2026-07-22T12:30:00Z",
+		},
+		PriceUSD: &priceUSD,
+	}}}
+
+	rec := doGet(NewRouter(svc), "/v1/native")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+	var got []wallet.Token
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if got == nil || len(got) != 1 {
+		t.Fatalf("tokens = %+v, want a non-nil one-element array", got)
+	}
+	if got[0].Symbol != "ETH" || !got[0].IsNative {
+		t.Errorf("token = %+v, want native ETH", got[0])
+	}
+	if got[0].TokenAddress != nil || got[0].Price == nil || got[0].Price.Value != "3200.50" {
+		t.Errorf("native token shape is wrong: %+v", got[0])
+	}
+}
+
+func TestNativeEndpointUnavailable(t *testing.T) {
+	svc := &stubService{err: wallet.ErrNativeTokenUnavailable}
+	rec := doGet(NewRouter(svc), "/v1/native")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", rec.Code, rec.Body)
+	}
+	var got ErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if got.Error != "native token data unavailable" {
+		t.Errorf("error = %q, want %q", got.Error, "native token data unavailable")
+	}
+}
+
+func TestNativeEndpointUnexpectedError(t *testing.T) {
+	svc := &stubService{err: context.Canceled}
+	rec := doGet(NewRouter(svc), "/v1/native")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%s", rec.Code, rec.Body)
 	}
 }
