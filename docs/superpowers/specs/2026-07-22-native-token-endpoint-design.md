@@ -2,10 +2,11 @@
 
 ## Summary
 
-Add `GET /v1/native`, a parameterless endpoint that returns Ethereum's native
-ETH token as one bare `wallet.Token` JSON object. The response is built from the
-existing in-memory LI.FI token-list snapshot; the endpoint does not call LI.FI
-directly and does not read a wallet balance.
+Add `GET /v1/native`, a parameterless endpoint that returns a bare JSON array of
+native `wallet.Token` objects. The initial response contains one Ethereum ETH
+token. The response is built from the existing in-memory LI.FI token-list
+snapshot; the endpoint does not call LI.FI directly and does not read a wallet
+balance.
 
 The endpoint is ETH-specific, matching the application's current single-chain
 scope.
@@ -13,7 +14,9 @@ scope.
 ## Goals
 
 - Expose LI.FI metadata and USD price information for native ETH.
-- Preserve the existing `wallet.Token` response shape.
+- Preserve the existing `wallet.Token` shape for each array element.
+- Make the response extensible to additional token entries without changing its
+  top-level JSON type.
 - Reuse the token-list snapshot populated by the existing refresh process.
 - Return a non-null nested `price` object whose timestamp represents when the
   LI.FI snapshot was fetched.
@@ -39,27 +42,29 @@ The endpoint accepts no path or query parameters.
 
 ### Success response
 
-The response status is `200 OK`. The body is a bare `wallet.Token`, not an
-envelope:
+The response status is `200 OK`. The body is a bare array of `wallet.Token`
+objects, not an envelope. The initial implementation returns exactly one item:
 
 ```json
-{
-  "tokenAddress": null,
-  "symbol": "ETH",
-  "name": "Ethereum",
-  "decimals": 18,
-  "rawBalance": "0",
-  "balance": "0",
-  "isNative": true,
-  "price": {
-    "currency": "usd",
-    "value": "3200.50",
-    "lastUpdatedAt": "2026-07-22T12:00:00Z"
-  },
-  "logoURI": "https://example.com/eth.png",
-  "coinKey": "ETH",
-  "priceUSD": "3200.50"
-}
+[
+  {
+    "tokenAddress": null,
+    "symbol": "ETH",
+    "name": "Ethereum",
+    "decimals": 18,
+    "rawBalance": "0",
+    "balance": "0",
+    "isNative": true,
+    "price": {
+      "currency": "usd",
+      "value": "3200.50",
+      "lastUpdatedAt": "2026-07-22T12:00:00Z"
+    },
+    "logoURI": "https://example.com/eth.png",
+    "coinKey": "ETH",
+    "priceUSD": "3200.50"
+  }
+]
 ```
 
 `logoURI` and `coinKey` retain their existing `omitempty` behavior and may be
@@ -91,14 +96,14 @@ The request follows the existing layering:
 
 ```text
 HTTP handler
-  -> wallet.Service.GetNativeToken
+  -> wallet.Service.GetNativeTokens
     -> Allowlist.LookupNative
       -> current tokenlist.Snapshot
 ```
 
 The API router registers `GET /v1/native`. Its handler calls the wallet service,
 maps the native-data-unavailable domain error to the agreed `503` response, and
-writes the returned token directly as JSON.
+writes the returned token slice directly as JSON.
 
 The wallet service owns the conversion from the LI.FI representation into the
 public `wallet.Token` domain model. The HTTP layer does not depend directly on
@@ -127,8 +132,8 @@ I/O.
 
 ## Response mapping
 
-`wallet.Service.GetNativeToken` constructs a new `wallet.Token` using this
-mapping:
+`wallet.Service.GetNativeTokens` constructs one new `wallet.Token` using this
+mapping and returns it in a non-nil one-element slice:
 
 | `wallet.Token` field | Source/value |
 |---|---|
@@ -167,17 +172,19 @@ response.
 
 - Extend `Allowlist` with the native lookup behavior.
 - Add a domain error for unavailable native-token data.
-- Add `Service.GetNativeToken(ctx)` to validate and map snapshot data into a new
-  `wallet.Token`.
+- Add `Service.GetNativeTokens(ctx)` to validate and map snapshot data into a new
+  one-element `[]wallet.Token`.
 
 ### `internal/api`
 
-- Extend `WalletService` with `GetNativeToken`.
+- Extend `WalletService` with `GetNativeTokens`.
 - Register `GET /v1/native`.
-- Add a handler that returns the bare token and maps the native-data-unavailable
-  error to `503` with `{"error":"native token data unavailable"}`.
-- Add handler annotations so the generated OpenAPI specification includes
-  `/native` under the application's existing `/v1` base path.
+- Add a handler that returns the bare token array and maps the
+  native-data-unavailable error to `503` with
+  `{"error":"native token data unavailable"}`.
+- Add a `{array} wallet.Token` success annotation so the generated OpenAPI
+  specification includes the array response for `/native` under the
+  application's existing `/v1` base path.
 
 ### Documentation
 
@@ -200,7 +207,8 @@ loop changes are required.
 
 ### Wallet service tests
 
-- A complete native LI.FI entry maps to every expected `wallet.Token` field.
+- A complete native LI.FI entry maps to every expected `wallet.Token` field in a
+  non-nil, one-element slice.
 - The response uses a nil token address, zero balances, and `IsNative: true`.
 - `Price` is non-null, uses `usd`, copies `priceUSD`, and formats snapshot
   `FetchedAt` in UTC RFC 3339 form.
@@ -210,7 +218,7 @@ loop changes are required.
 
 ### API tests
 
-- `GET /v1/native` returns `200` and a bare token object.
+- `GET /v1/native` returns `200` and a bare one-element token array.
 - The native-data-unavailable error returns `503` and the agreed JSON error.
 - Unexpected service errors retain the existing `500` response.
 - Existing address routes remain registered and unchanged.
