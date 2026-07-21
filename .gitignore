@@ -1,0 +1,55 @@
+# Environment configuration and secrets
+.env
+.env.*
+!.env.example
+*.local
+*.secret
+*.secrets
+secrets/
+credentials*.json
+service-account*.json
+*-credentials.json
+*.pem
+*.key
+
+# Go build and test artifacts
+bin/
+build/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.out
+coverage.html
+*.prof
+_conf
+
+# Local databases and logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+tmp/
+temp/
+
+# Docker and local tooling overrides
+docker-compose.override.yml
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+server
