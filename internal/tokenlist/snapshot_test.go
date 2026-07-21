@@ -57,3 +57,51 @@ func TestHolderAtomicSetAndCurrent(t *testing.T) {
 		t.Error("holder should delegate lookup to current snapshot")
 	}
 }
+
+func TestSnapshotLookupNative(t *testing.T) {
+	fetchedAt := time.Date(2026, 7, 22, 12, 30, 0, 0, time.UTC)
+	native := lifi.ListToken{
+		Address:  "0x0000000000000000000000000000000000000000",
+		Symbol:   "ETH",
+		Name:     "Ethereum",
+		Decimals: 18,
+		PriceUSD: "3200.50",
+	}
+	s := NewSnapshot("ETH", append(sampleTokens(), native), fetchedAt)
+
+	got, gotAt, ok := s.LookupNative()
+	if !ok {
+		t.Fatal("expected native ETH lookup hit")
+	}
+	if got != native {
+		t.Errorf("token = %+v, want %+v", got, native)
+	}
+	if !gotAt.Equal(fetchedAt) {
+		t.Errorf("fetchedAt = %v, want %v", gotAt, fetchedAt)
+	}
+
+	missing := NewSnapshot("ETH", sampleTokens(), fetchedAt)
+	if _, _, ok := missing.LookupNative(); ok {
+		t.Error("snapshot without zero-address token should miss")
+	}
+}
+
+func TestHolderLookupNative(t *testing.T) {
+	var h Holder
+	if _, _, ok := h.LookupNative(); ok {
+		t.Error("holder without a snapshot should miss, not panic")
+	}
+
+	fetchedAt := time.Date(2026, 7, 22, 12, 30, 0, 0, time.UTC)
+	native := lifi.ListToken{
+		Address:  "0x0000000000000000000000000000000000000000",
+		Symbol:   "ETH",
+		PriceUSD: "3200.50",
+	}
+	h.Set(NewSnapshot("ETH", []lifi.ListToken{native}, fetchedAt))
+
+	got, gotAt, ok := h.LookupNative()
+	if !ok || got.Symbol != "ETH" || !gotAt.Equal(fetchedAt) {
+		t.Fatalf("holder native lookup = (%+v, %v, %v)", got, gotAt, ok)
+	}
+}

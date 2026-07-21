@@ -10,6 +10,8 @@ import (
 	"wallet-api/internal/lifi"
 )
 
+const nativeTokenAddress = "0x0000000000000000000000000000000000000000"
+
 // Snapshot is an immutable, indexed view of the token list.
 type Snapshot struct {
 	chain     string
@@ -37,6 +39,12 @@ func NewSnapshot(chain string, tokens []lifi.ListToken, fetchedAt time.Time) *Sn
 func (s *Snapshot) LookupByAddress(addr string) (lifi.ListToken, bool) {
 	t, ok := s.byAddress[strings.ToLower(strings.TrimSpace(addr))]
 	return t, ok
+}
+
+// LookupNative returns the LI.FI native-token entry and snapshot fetch time.
+func (s *Snapshot) LookupNative() (lifi.ListToken, time.Time, bool) {
+	t, ok := s.LookupByAddress(nativeTokenAddress)
+	return t, s.fetchedAt, ok
 }
 
 // HasSymbol reports whether a (case-insensitive) symbol is in the list.
@@ -70,6 +78,15 @@ func (h *Holder) LookupByAddress(addr string) (lifi.ListToken, bool) {
 		return lifi.ListToken{}, false
 	}
 	return s.LookupByAddress(addr)
+}
+
+// LookupNative delegates to the current snapshot.
+func (h *Holder) LookupNative() (lifi.ListToken, time.Time, bool) {
+	s := h.Current()
+	if s == nil {
+		return lifi.ListToken{}, time.Time{}, false
+	}
+	return s.LookupNative()
 }
 
 // HasSymbol delegates to the current snapshot.
