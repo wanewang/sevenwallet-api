@@ -59,7 +59,8 @@ func (s *Service) GetTokens(ctx context.Context, address string) (*TokenPortfoli
 // GetNativeTokens returns native ETH metadata and price from the current LI.FI snapshot.
 func (s *Service) GetNativeTokens(_ context.Context) ([]Token, error) {
 	lt, fetchedAt, ok := s.allow.LookupNative()
-	if !ok || strings.TrimSpace(lt.PriceUSD) == "" || fetchedAt.IsZero() {
+	priceUSD := strings.TrimSpace(lt.PriceUSD)
+	if !ok || priceUSD == "" || fetchedAt.IsZero() {
 		return nil, ErrNativeTokenUnavailable
 	}
 
@@ -73,10 +74,10 @@ func (s *Service) GetNativeTokens(_ context.Context) ([]Token, error) {
 		IsNative:     true,
 		Price: &Price{
 			Currency:      "usd",
-			Value:         lt.PriceUSD,
+			Value:         priceUSD,
 			LastUpdatedAt: fetchedAt.UTC().Format(time.RFC3339),
 		},
-		PriceUSD: strptr(lt.PriceUSD),
+		PriceUSD: strptr(priceUSD),
 	}
 	if lt.LogoURI != "" {
 		t.LogoURI = strptr(lt.LogoURI)

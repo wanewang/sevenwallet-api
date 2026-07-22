@@ -360,6 +360,26 @@ func TestGetNativeTokensLeavesOptionalMetadataNil(t *testing.T) {
 	}
 }
 
+func TestGetNativeTokensTrimsPrice(t *testing.T) {
+	allow := &fakeAllowlist{
+		native:          lifi.ListToken{Symbol: "ETH", Name: "Ethereum", Decimals: 18, PriceUSD: "  3200.50  "},
+		nativeFetchedAt: time.Date(2026, 7, 22, 12, 30, 0, 0, time.UTC),
+		nativeOK:        true,
+	}
+	svc := NewService(&fakeAlchemy{}, &fakeTokenStore{}, &fakeTxCache{}, allow, denyValidator(), "eth-mainnet", time.Minute)
+
+	got, err := svc.GetNativeTokens(context.Background())
+	if err != nil {
+		t.Fatalf("GetNativeTokens: %v", err)
+	}
+	if got[0].Price.Value != "3200.50" {
+		t.Errorf("price.value = %q, want trimmed %q", got[0].Price.Value, "3200.50")
+	}
+	if got[0].PriceUSD == nil || *got[0].PriceUSD != "3200.50" {
+		t.Errorf("priceUSD = %v, want trimmed %q", got[0].PriceUSD, "3200.50")
+	}
+}
+
 func TestGetNativeTokensUnavailable(t *testing.T) {
 	fetchedAt := time.Date(2026, 7, 22, 12, 30, 0, 0, time.UTC)
 	tests := []struct {
