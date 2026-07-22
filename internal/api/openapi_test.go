@@ -26,6 +26,30 @@ func TestServeOpenAPISpec(t *testing.T) {
 	if _, ok := paths["/addresses/{address}/tokens"]; !ok {
 		t.Errorf("spec missing tokens path; got paths %v", paths)
 	}
+	nativePath, ok := paths["/native"].(map[string]any)
+	if !ok {
+		t.Fatalf("spec missing native path; got paths %v", paths)
+	}
+	get, ok := nativePath["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("native path has no GET operation: %v", nativePath)
+	}
+	responses, ok := get["responses"].(map[string]any)
+	if !ok {
+		t.Fatalf("native GET has no responses: %v", get)
+	}
+	okResponse, ok := responses["200"].(map[string]any)
+	if !ok {
+		t.Fatalf("native GET has no 200 response: %v", responses)
+	}
+	schema, ok := okResponse["schema"].(map[string]any)
+	if !ok || schema["type"] != "array" {
+		t.Fatalf("native 200 schema = %v, want array", okResponse["schema"])
+	}
+	items, ok := schema["items"].(map[string]any)
+	if !ok || items["$ref"] != "#/definitions/wallet-api_internal_wallet.Token" {
+		t.Errorf("native array items = %v, want wallet.Token reference", schema["items"])
+	}
 }
 
 func TestServeDocs(t *testing.T) {

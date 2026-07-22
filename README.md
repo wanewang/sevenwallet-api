@@ -11,10 +11,16 @@ read-through (cache-first) strategy and a configurable TTL.
 
 | Method & path | Description |
 |---|---|
+| `GET /v1/native` | Native ETH metadata and USD price from the refreshed LI.FI snapshot |
 | `GET /v1/addresses/{address}/tokens` | Token portfolio — native ETH + ERC-20, with metadata and prices |
 | `GET /v1/addresses/{address}/transactions` | Transaction history (asset transfers), paginated via `limit` & `pageKey` |
 
 `{address}` must be a `0x`-prefixed 20-byte hex address.
+
+`GET /v1/native` returns a bare token array. It currently contains one ETH item,
+allowing more native-token entries to be added later without changing the
+top-level response type. Metadata and USD price are read from the existing LI.FI
+snapshot, so the endpoint makes no request-time provider call.
 
 ## API documentation
 
