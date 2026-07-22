@@ -53,4 +53,5 @@ docker-compose.override.yml
 *.swo
 *~
 
-server
+# Compiled server binary at the repo root (anchored so it doesn't match cmd/server/)
+/server
