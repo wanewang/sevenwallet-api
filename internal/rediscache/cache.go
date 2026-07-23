@@ -117,6 +117,269 @@ local function compareDecimals(left, right)
   return 1
 end
 
+local function compareUnsigned(left, right)
+  if string.len(left) ~= string.len(right) then
+    if string.len(left) < string.len(right) then
+      return -1
+    end
+    return 1
+  end
+  if left == right then
+    return 0
+  end
+  if left < right then
+    return -1
+  end
+  return 1
+end
+
+local function canonicalInt64(value)
+  if type(value) ~= 'string' or value == '' then
+    return false
+  end
+  local start = 1
+  local negative = false
+  if string.sub(value, 1, 1) == '-' then
+    negative = true
+    start = 2
+  end
+  if start > string.len(value) then
+    return false
+  end
+  if string.sub(value, start, start) == '0' and start < string.len(value) then
+    return false
+  end
+  for i = start, string.len(value) do
+    local digit = string.byte(value, i)
+    if digit < 48 or digit > 57 then
+      return false
+    end
+  end
+  local digits = string.sub(value, start)
+  if negative and digits == '0' then
+    return false
+  end
+  if string.len(digits) > 19 then
+    return false
+  end
+  if string.len(digits) == 19 then
+    local limit = '9223372036854775807'
+    if negative then
+      limit = '9223372036854775808'
+    end
+    if compareUnsigned(digits, limit) == 1 then
+      return false
+    end
+  end
+  return true
+end
+
+local function stripLeadingZeros(value)
+  local digits = string.gsub(value, '^0+', '')
+  if digits == '' then
+    return '0'
+  end
+  return digits
+end
+
+local function integerString(value)
+  if value == 0 then
+    return '0'
+  end
+  local result = ''
+  while value > 0 do
+    local digit = value % 10
+    result = string.char(48 + digit) .. result
+    value = math.floor(value / 10)
+  end
+  return result
+end
+
+local function addUnsigned(left, right)
+  local i = string.len(left)
+  local j = string.len(right)
+  local carry = 0
+  local result = ''
+  while i >= 1 or j >= 1 or carry > 0 do
+    local total = carry
+    if i >= 1 then
+      total = total + string.byte(left, i) - 48
+      i = i - 1
+    end
+    if j >= 1 then
+      total = total + string.byte(right, j) - 48
+      j = j - 1
+    end
+    result = string.char(48 + total % 10) .. result
+    carry = math.floor(total / 10)
+  end
+  return stripLeadingZeros(result)
+end
+
+local function subtractUnsigned(left, right)
+  local i = string.len(left)
+  local j = string.len(right)
+  local borrow = 0
+  local result = ''
+  while i >= 1 do
+    local difference = string.byte(left, i) - 48 - borrow
+    if j >= 1 then
+      difference = difference - string.byte(right, j) + 48
+      j = j - 1
+    end
+    if difference < 0 then
+      difference = difference + 10
+      borrow = 1
+    else
+      borrow = 0
+    end
+    result = string.char(48 + difference) .. result
+    i = i - 1
+  end
+  return stripLeadingZeros(result)
+end
+
+local function multiplyUnsignedByInteger(value, multiplier)
+  local i = string.len(value)
+  local carry = 0
+  local result = ''
+  while i >= 1 do
+    local total = (string.byte(value, i) - 48) * multiplier + carry
+    result = string.char(48 + total % 10) .. result
+    carry = math.floor(total / 10)
+    i = i - 1
+  end
+  while carry > 0 do
+    result = string.char(48 + carry % 10) .. result
+    carry = math.floor(carry / 10)
+  end
+  return stripLeadingZeros(result)
+end
+
+local function parseDigits(value, start, count)
+  if start + count - 1 > string.len(value) then
+    return nil
+  end
+  local result = 0
+  for i = start, start + count - 1 do
+    local digit = string.byte(value, i)
+    if digit < 48 or digit > 57 then
+      return nil
+    end
+    result = result * 10 + digit - 48
+  end
+  return result
+end
+
+local function leapYear(year)
+  return year % 4 == 0 and (year % 100 ~= 0 or year % 400 == 0)
+end
+
+local function timestampUnixNano(value)
+  if type(value) ~= 'string' or string.len(value) < 20 then
+    return nil
+  end
+  local year = parseDigits(value, 1, 4)
+  local month = parseDigits(value, 6, 2)
+  local day = parseDigits(value, 9, 2)
+  local hour = parseDigits(value, 12, 2)
+  local minute = parseDigits(value, 15, 2)
+  local second = parseDigits(value, 18, 2)
+  if not year or not month or not day or not hour or not minute or not second or
+      string.sub(value, 5, 5) ~= '-' or string.sub(value, 8, 8) ~= '-' or
+      string.sub(value, 11, 11) ~= 'T' or string.sub(value, 14, 14) ~= ':' or
+      string.sub(value, 17, 17) ~= ':' then
+    return nil
+  end
+  if month < 1 or month > 12 or hour > 23 or minute > 59 or second > 59 then
+    return nil
+  end
+  local monthDays = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
+  if month == 2 and leapYear(year) then
+    monthDays[2] = 29
+  end
+  if day < 1 or day > monthDays[month] then
+    return nil
+  end
+
+  local position = 20
+  local nanos = 0
+  local fractionMarker = string.sub(value, 20, 20)
+  if fractionMarker == '.' or fractionMarker == ',' then
+    position = position + 1
+    local fractionStart = position
+    while position <= string.len(value) do
+      local digit = string.byte(value, position)
+      if digit < 48 or digit > 57 then
+        break
+      end
+      position = position + 1
+    end
+    local fractionDigits = position - fractionStart
+    if fractionDigits < 1 or fractionDigits > 9 then
+      return nil
+    end
+    nanos = parseDigits(value, fractionStart, fractionDigits)
+    for _ = fractionDigits + 1, 9 do
+      nanos = nanos * 10
+    end
+  end
+
+  local offsetSeconds = 0
+  local zone = string.sub(value, position, position)
+  if zone == 'Z' then
+    if position ~= string.len(value) then
+      return nil
+    end
+  elseif zone == '+' or zone == '-' then
+    if position + 5 ~= string.len(value) or string.sub(value, position + 3, position + 3) ~= ':' then
+      return nil
+    end
+    local offsetHour = parseDigits(value, position + 1, 2)
+    local offsetMinute = parseDigits(value, position + 4, 2)
+    if not offsetHour or not offsetMinute or offsetHour > 23 or offsetMinute > 59 then
+      return nil
+    end
+    offsetSeconds = offsetHour * 3600 + offsetMinute * 60
+    if zone == '-' then
+      offsetSeconds = -offsetSeconds
+    end
+  else
+    return nil
+  end
+
+  local adjustedYear = year
+  if month <= 2 then
+    adjustedYear = adjustedYear - 1
+  end
+  local era = math.floor(adjustedYear / 400)
+  local yearOfEra = adjustedYear - era * 400
+  local monthOfYear
+  if month > 2 then
+    monthOfYear = month - 3
+  else
+    monthOfYear = month + 9
+  end
+  local dayOfYear = math.floor((153 * monthOfYear + 2) / 5) + day - 1
+  local dayOfEra = yearOfEra * 365 + math.floor(yearOfEra / 4) - math.floor(yearOfEra / 100) + dayOfYear
+  local days = era * 146097 + dayOfEra - 719468
+  local seconds = days * 86400 + hour * 3600 + minute * 60 + second - offsetSeconds
+  local negative = seconds < 0
+  local absoluteSeconds = math.abs(seconds)
+  local magnitude = multiplyUnsignedByInteger(integerString(absoluteSeconds), 1000000000)
+  if negative then
+    if nanos > 0 then
+      magnitude = subtractUnsigned(magnitude, integerString(nanos))
+    end
+    if magnitude == '0' then
+      return '0'
+    end
+    return '-' .. magnitude
+  end
+  magnitude = addUnsigned(magnitude, integerString(nanos))
+  return magnitude
+end
+
 local function validEnvelope(decoded, expectedChain, expectedToken)
   if type(decoded) ~= 'table' then
     return false
@@ -130,8 +393,11 @@ local function validEnvelope(decoded, expectedChain, expectedToken)
       return false
     end
   end
-  local _, digits = decimalParts(decoded['fetchedAtUnixNano'])
-  return digits ~= nil
+  if not canonicalInt64(decoded['fetchedAtUnixNano']) then
+    return false
+  end
+  local expectedVersion = timestampUnixNano(decoded['fetchedAt'])
+  return expectedVersion ~= nil and expectedVersion == decoded['fetchedAtUnixNano']
 end
 
 local current = redis.call('GET', KEYS[1])

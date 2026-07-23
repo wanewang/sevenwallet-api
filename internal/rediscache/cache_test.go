@@ -269,3 +269,47 @@ func TestMarketDataMalformedRedisEnvelopesAreMissesAndReplaceable(t *testing.T) 
 		}
 	}
 }
+
+func TestMarketDataMalformedSameKeyEnvelopesAreReplaceable(t *testing.T) {
+	c := newTestCache(t)
+	ctx := context.Background()
+	key := marketdata.ContractKey("ethereum", "0xA0B8")
+	deleteMarketKeys(t, c, key)
+
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "oversized version",
+			raw:  `{"chain":"ethereum","tokenKey":"0xa0b8","coingeckoID":"malformed","fetchedAt":"2023-11-14T22:13:20.123456789Z","fetchedAtUnixNano":"9223372036854775808"}`,
+		},
+		{
+			name: "invalid timestamp",
+			raw:  `{"chain":"ethereum","tokenKey":"0xa0b8","coingeckoID":"malformed","fetchedAt":"not-a-timestamp","fetchedAtUnixNano":"1700000000123456789"}`,
+		},
+		{
+			name: "mismatched version",
+			raw:  `{"chain":"ethereum","tokenKey":"0xa0b8","coingeckoID":"malformed","fetchedAt":"2023-11-14T22:13:20.123456789Z","fetchedAtUnixNano":"1700000000123456788"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := c.client.Set(ctx, marketKey(key), tt.raw, time.Hour).Err(); err != nil {
+				t.Fatalf("seed malformed envelope: %v", err)
+			}
+
+			valid := marketdata.Record{Key: key, CoinGeckoID: "legitimate", FetchedAt: time.Unix(2_000, 0).UTC()}
+			if err := c.SaveMarketData(ctx, []marketdata.CacheWrite{{Record: valid, TTL: 10 * time.Minute}}); err != nil {
+				t.Fatalf("replace malformed envelope: %v", err)
+			}
+			got, err := c.LoadMarketData(ctx, []marketdata.Key{key})
+			if err != nil {
+				t.Fatalf("load replacement: %v", err)
+			}
+			if got[key].CoinGeckoID != "legitimate" {
+				t.Fatalf("replacement = %#v", got[key])
+			}
+		})
+	}
+}
