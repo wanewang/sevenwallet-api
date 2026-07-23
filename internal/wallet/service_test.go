@@ -91,7 +91,7 @@ func TestGetTokensDropsUnknownTokens(t *testing.T) {
 
 func TestGetTokensEnrichesNativeMetadataWhenAlchemyOmitsIt(t *testing.T) {
 	allow := allowUSDC()
-	allow.native = lifi.ListToken{Symbol: "ETH", Name: "Ethereum", Decimals: 18, PriceUSD: "3200.50"}
+	allow.native = lifi.ListToken{Symbol: "ETH", Name: "Ethereum", Decimals: 18, CoinKey: "ETH", PriceUSD: "3200.50"}
 	allow.nativeFetchedAt = time.Date(2026, 7, 22, 12, 30, 0, 0, time.UTC)
 	allow.nativeOK = true
 
@@ -110,6 +110,9 @@ func TestGetTokensEnrichesNativeMetadataWhenAlchemyOmitsIt(t *testing.T) {
 	native := portfolio.Tokens[0]
 	if native.Symbol != "ETH" || native.Name != "Ethereum" || native.Decimals != 18 {
 		t.Fatalf("native metadata = %+v, want ETH/Ethereum/18", native)
+	}
+	if native.CoinKey == nil || *native.CoinKey != "ETH" {
+		t.Errorf("native coinKey = %v, want ETH", native.CoinKey)
 	}
 	if native.Balance != "2.945090757010143844" {
 		t.Errorf("native balance = %q, want scaled balance", native.Balance)
