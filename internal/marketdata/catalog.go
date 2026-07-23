@@ -32,6 +32,9 @@ func BuildMappings(coins []coingecko.Coin, fetchedAt time.Time) []CoinMapping {
 	mappings := make([]CoinMapping, 0, len(coins))
 	for _, coin := range coins {
 		id := strings.TrimSpace(coin.ID)
+		if id == "" {
+			continue
+		}
 		name := strings.TrimSpace(coin.Name)
 		symbol := strings.TrimSpace(coin.Symbol)
 		usablePlatform := false
@@ -80,12 +83,14 @@ func BuildMappings(coins []coingecko.Coin, fetchedAt time.Time) []CoinMapping {
 type Catalog struct {
 	byContract map[string][]CoinMapping
 	byNative   map[string][]CoinMapping
+	count      int
 }
 
 func NewCatalog(mappings []CoinMapping) *Catalog {
 	catalog := &Catalog{
 		byContract: make(map[string][]CoinMapping),
 		byNative:   make(map[string][]CoinMapping),
+		count:      len(mappings),
 	}
 	for _, mapping := range mappings {
 		if mapping.Address == NativeAddress {
@@ -97,6 +102,14 @@ func NewCatalog(mappings []CoinMapping) *Catalog {
 		catalog.byContract[key] = append(catalog.byContract[key], mapping)
 	}
 	return catalog
+}
+
+// Count returns the number of normalized mapping rows in the catalog.
+func (c *Catalog) Count() int {
+	if c == nil {
+		return 0
+	}
+	return c.count
 }
 
 func contractLookupKey(chain, address string) string {
@@ -151,6 +164,15 @@ func (h *Holder) Set(catalog *Catalog) {
 	if h != nil {
 		h.ptr.Store(catalog)
 	}
+}
+
+// Count returns the current catalog's normalized mapping-row count.
+func (h *Holder) Count() int {
+	catalog := h.Current()
+	if catalog == nil {
+		return 0
+	}
+	return catalog.Count()
 }
 
 func (h *Holder) ResolveContract(chain, address string) (string, bool) {

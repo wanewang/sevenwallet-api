@@ -64,6 +64,28 @@ func TestBuildMappingsUsesNativeForNoUsablePlatform(t *testing.T) {
 	}
 }
 
+func TestBuildMappingsSkipsBlankIDsAndLeavesLookupsUnresolved(t *testing.T) {
+	coins := []coingecko.Coin{
+		{ID: " ", Symbol: " ETH ", Platforms: map[string]string{
+			"ethereum": "0xabc",
+		}},
+		{ID: "\t", Symbol: " SOL ", Platforms: map[string]string{}},
+	}
+
+	mappings := BuildMappings(coins, time.Unix(1_700_000_000, 0).UTC())
+	if len(mappings) != 0 {
+		t.Fatalf("mappings = %#v, want no rows for blank IDs", mappings)
+	}
+
+	catalog := NewCatalog(mappings)
+	if _, ok := catalog.ResolveContract("ethereum", "0xabc"); ok {
+		t.Fatal("blank contract ID should remain unresolved")
+	}
+	if _, ok := catalog.ResolveNative("SOL", nil); ok {
+		t.Fatal("blank native ID should remain unresolved")
+	}
+}
+
 func TestCatalogResolveEthereumAddressCaseInsensitive(t *testing.T) {
 	catalog := NewCatalog([]CoinMapping{{
 		ID: "usd-coin", Chain: "ethereum", Address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
@@ -123,15 +145,38 @@ func TestCatalogDuplicateNativeSameIDIsNotAmbiguous(t *testing.T) {
 	}
 }
 
+func TestCatalogCountReportsMappingRows(t *testing.T) {
+	mappings := []CoinMapping{
+		{ID: "ethereum", Symbol: "ETH", Chain: "eth", Address: NativeAddress},
+		{ID: "usd-coin", Chain: "ethereum", Address: "0xabc"},
+	}
+
+	if got := NewCatalog(mappings).Count(); got != len(mappings) {
+		t.Fatalf("catalog Count() = %d, want %d", got, len(mappings))
+	}
+}
+
 func TestHolderNilReturnsMissesWithoutPanicking(t *testing.T) {
 	var holder Holder
 	if holder.Current() != nil {
 		t.Fatal("zero-value holder should have no catalog")
+	}
+	if got := holder.Count(); got != 0 {
+		t.Fatalf("nil holder Count() = %d, want 0", got)
 	}
 	if _, ok := holder.ResolveContract("ethereum", "0xabc"); ok {
 		t.Fatal("nil holder contract lookup should miss")
 	}
 	if _, ok := holder.ResolveNative("ETH", nil); ok {
 		t.Fatal("nil holder native lookup should miss")
+	}
+}
+
+func TestHolderCountDelegatesToCurrentCatalog(t *testing.T) {
+	var holder Holder
+	holder.Set(NewCatalog([]CoinMapping{{ID: "ethereum", Address: NativeAddress}}))
+
+	if got := holder.Count(); got != 1 {
+		t.Fatalf("holder Count() = %d, want 1", got)
 	}
 }
