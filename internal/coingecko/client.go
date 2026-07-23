@@ -25,6 +25,12 @@ type Client struct {
 	sleep      func(context.Context, time.Duration) error
 }
 
+type retryableError struct{ err error }
+
+func (e *retryableError) Error() string { return e.err.Error() }
+
+func (e *retryableError) Unwrap() error { return e.err }
+
 // New builds a Client for the configured CoinGecko API base URL.
 func New(baseURL, userAgent string) *Client {
 	return &Client{
@@ -86,7 +92,7 @@ func (c *Client) getJSON(ctx context.Context, operation, path string, query url.
 	}
 	res, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("coingecko %s request failed: %w", operation, err)
+		return fmt.Errorf("coingecko %s request failed: %w", operation, &retryableError{err: err})
 	}
 	defer res.Body.Close()
 	if res.StatusCode < http.StatusOK || res.StatusCode >= http.StatusMultipleChoices {
@@ -94,7 +100,7 @@ func (c *Client) getJSON(ctx context.Context, operation, path string, query url.
 		return fmt.Errorf("coingecko %s: %w", operation, &StatusError{StatusCode: res.StatusCode})
 	}
 	if err := json.NewDecoder(res.Body).Decode(out); err != nil {
-		return fmt.Errorf("coingecko %s response: %w", operation, err)
+		return fmt.Errorf("coingecko %s response: %w", operation, &retryableError{err: err})
 	}
 	return nil
 }
@@ -121,9 +127,10 @@ func retryable(err error) bool {
 	}
 	var statusErr *StatusError
 	if errors.As(err, &statusErr) {
-		return statusErr.StatusCode == http.StatusTooManyRequests || statusErr.StatusCode >= 500
+		return statusErr.StatusCode == http.StatusTooManyRequests || (statusErr.StatusCode >= 500 && statusErr.StatusCode <= 599)
 	}
-	return true
+	var retryErr *retryableError
+	return errors.As(err, &retryErr)
 }
 
 func sleep(ctx context.Context, delay time.Duration) error {

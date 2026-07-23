@@ -187,6 +187,46 @@ func TestGetPricesDoesNotRetryHTTP400(t *testing.T) {
 	}
 }
 
+func TestGetPricesDoesNotRetryRequestConstructionErrors(t *testing.T) {
+	c := New("://bad-url", "ua")
+	sleeps := 0
+	c.sleep = func(context.Context, time.Duration) error {
+		sleeps++
+		return nil
+	}
+
+	_, err := c.GetPrices(context.Background(), []string{"ethereum"})
+	if err == nil {
+		t.Fatal("GetPrices succeeded with malformed base URL")
+	}
+	if sleeps != 0 {
+		t.Fatalf("sleep calls=%d, want 0 for terminal request-construction error", sleeps)
+	}
+}
+
+func TestGetPricesDoesNotRetryHTTP600(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "unknown status", 600)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "ua")
+	c.sleep = func(context.Context, time.Duration) error {
+		t.Fatal("sleep called for HTTP 600")
+		return nil
+	}
+	_, err := c.GetPrices(context.Background(), []string{"ethereum"})
+	if err == nil || calls != 1 {
+		t.Fatalf("err=%v calls=%d, want one terminal call", err, calls)
+	}
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != 600 {
+		t.Fatalf("err=%v, want HTTP 600 StatusError", err)
+	}
+}
+
 func TestGetPricesReturnsCanceledRetrySleep(t *testing.T) {
 	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
