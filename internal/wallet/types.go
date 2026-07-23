@@ -25,17 +25,20 @@ type Price struct {
 
 // Token is a normalized token holding returned to API clients.
 type Token struct {
-	TokenAddress *string `json:"tokenAddress"`
-	Symbol       string  `json:"symbol"`
-	Name         string  `json:"name"`
-	Decimals     int     `json:"decimals"`
-	RawBalance   string  `json:"rawBalance"`
-	Balance      string  `json:"balance"`
-	IsNative     bool    `json:"isNative"`
-	Price        *Price  `json:"price"`
-	LogoURI      *string `json:"logoURI,omitempty"`
-	CoinKey      *string `json:"coinKey,omitempty"`
-	PriceUSD     *string `json:"priceUSD,omitempty"`
+	TokenAddress        *string  `json:"tokenAddress"`
+	Symbol              string   `json:"symbol"`
+	Name                string   `json:"name"`
+	Decimals            int      `json:"decimals"`
+	RawBalance          string   `json:"rawBalance"`
+	Balance             string   `json:"balance"`
+	IsNative            bool     `json:"isNative"`
+	Price               *Price   `json:"price"`
+	LogoURI             *string  `json:"logoURI,omitempty"`
+	CoinKey             *string  `json:"coinKey,omitempty"`
+	PriceUSD            *string  `json:"priceUSD,omitempty"`
+	Change24HPercent    *float64 `json:"change24hPercent"`
+	MarketCapUSD        *float64 `json:"marketCapUSD"`
+	MarketDataUpdatedAt *string  `json:"marketDataUpdatedAt"`
 }
 
 // TokenPortfolio is the current token snapshot for an address.
@@ -84,6 +87,11 @@ type Validation struct {
 // supplies enrichment metadata when it is.
 type Validator interface {
 	Validate(ctx context.Context, address string) (Validation, error)
+}
+
+// MarketEnricher adds market data to tokens after wallet filtering.
+type MarketEnricher interface {
+	EnrichTokens(ctx context.Context, tokens []Token) []Token
 }
 
 // AlchemyClient is the subset of the Alchemy client the service depends on.

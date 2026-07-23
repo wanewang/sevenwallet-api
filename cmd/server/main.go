@@ -65,7 +65,7 @@ func main() {
 	ac := alchemy.New(cfg.AlchemyAPIKey, cfg.AlchemyNetwork)
 	moralisClient := moralis.New(cfg.MoralisAPIKey, cfg.MoralisChain)
 	validator := tokenvalidity.NewChecker(moralisClient, redisCache, pg, cfg.MoralisChain, cfg.MoralisRecheck, cfg.MoralisRedisTTL)
-	svc := wallet.NewService(ac, pg, pg, holder, validator, cfg.AlchemyNetwork, cfg.CacheTTL)
+	svc := wallet.NewService(ac, pg, pg, holder, validator, nil, cfg.AlchemyNetwork, cfg.CacheTTL)
 	router := api.NewRouter(svc)
 
 	srv := &http.Server{

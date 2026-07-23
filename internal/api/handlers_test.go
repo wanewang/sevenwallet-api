@@ -53,6 +53,26 @@ func TestTokensEndpointOK(t *testing.T) {
 	}
 }
 
+func TestTokenResponseIncludesNullableMarketFields(t *testing.T) {
+	svc := &stubService{portfolio: &wallet.TokenPortfolio{
+		Address: validAddr, Network: "eth-mainnet",
+		Tokens: []wallet.Token{{Symbol: "ETH", IsNative: true}},
+	}}
+	rec := doGet(NewRouter(svc), "/v1/addresses/"+validAddr+"/tokens")
+	var body struct {
+		Tokens []map[string]any `json:"tokens"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"change24hPercent", "marketCapUSD", "marketDataUpdatedAt"} {
+		value, ok := body.Tokens[0][key]
+		if !ok || value != nil {
+			t.Errorf("%s present=%v value=%v", key, ok, value)
+		}
+	}
+}
+
 func TestTokensEndpointRejectsBadAddress(t *testing.T) {
 	svc := &stubService{}
 	rec := doGet(NewRouter(svc), "/v1/addresses/not-an-address/tokens")

@@ -30,7 +30,7 @@ func TestGetTokensCacheMissFetchesAndSaves(t *testing.T) {
 		{TokenAddress: usdc("0xA0B8"), Symbol: "USDC", Name: "USD Coin", Decimals: 6, RawBalance: "12500000"},
 	}}
 	ts := &fakeTokenStore{}
-	svc := NewService(fa, ts, &fakeTxCache{}, allowUSDC(), denyValidator(), "eth-mainnet", time.Minute)
+	svc := NewService(fa, ts, &fakeTxCache{}, allowUSDC(), denyValidator(), nil, "eth-mainnet", time.Minute)
 
 	p, err := svc.GetTokens(context.Background(), "0xABC")
 	if err != nil {
@@ -74,7 +74,7 @@ func TestGetTokensDropsUnknownTokens(t *testing.T) {
 		{TokenAddress: usdc("0xA0B8"), Symbol: "USDC", Decimals: 6, RawBalance: "12500000"},
 		{TokenAddress: usdc("0xSPAM"), Symbol: "SCAM", Decimals: 18, RawBalance: "999"},
 	}}
-	svc := NewService(fa, &fakeTokenStore{}, &fakeTxCache{}, allowUSDC(), denyValidator(), "eth-mainnet", time.Minute)
+	svc := NewService(fa, &fakeTokenStore{}, &fakeTxCache{}, allowUSDC(), denyValidator(), nil, "eth-mainnet", time.Minute)
 	p, err := svc.GetTokens(context.Background(), "0xABC")
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +94,7 @@ func TestGetTokensRescalesBalanceOnDecimalsOverride(t *testing.T) {
 	fa := &fakeAlchemy{tokens: []alchemy.Token{
 		{TokenAddress: usdc("0xA0B8"), Symbol: "usdc", Name: "wrong", Decimals: 18, RawBalance: "12500000"},
 	}}
-	svc := NewService(fa, &fakeTokenStore{}, &fakeTxCache{}, allowUSDC(), denyValidator(), "eth-mainnet", time.Minute)
+	svc := NewService(fa, &fakeTokenStore{}, &fakeTxCache{}, allowUSDC(), denyValidator(), nil, "eth-mainnet", time.Minute)
 	p, err := svc.GetTokens(context.Background(), "0xABC")
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +146,7 @@ func TestGetTokensCacheHitFiltersCachedSnapshot(t *testing.T) {
 	}}
 	fa := &fakeAlchemy{}
 	ts := &fakeTokenStore{saved: cached, fresh: true}
-	svc := NewService(fa, ts, &fakeTxCache{}, allowUSDC(), denyValidator(), "eth-mainnet", time.Minute)
+	svc := NewService(fa, ts, &fakeTxCache{}, allowUSDC(), denyValidator(), nil, "eth-mainnet", time.Minute)
 
 	p, err := svc.GetTokens(context.Background(), "0xABC")
 	if err != nil {
@@ -160,9 +160,59 @@ func TestGetTokensCacheHitFiltersCachedSnapshot(t *testing.T) {
 	}
 }
 
+func TestGetTokensMarketEnrichmentRunsAfterCacheMissFiltering(t *testing.T) {
+	fa := &fakeAlchemy{tokens: []alchemy.Token{
+		{TokenAddress: nil, Symbol: "ETH", Decimals: 18, RawBalance: "1000000000000000000"},
+		{TokenAddress: usdc("0xSPAM"), Symbol: "SCAM", Decimals: 18, RawBalance: "999"},
+	}}
+	market := &fakeMarketEnricher{out: []Token{{Symbol: "ENRICHED"}}}
+	svc := NewService(fa, &fakeTokenStore{}, &fakeTxCache{}, allowUSDC(), denyValidator(), market, "eth-mainnet", time.Minute)
+
+	got, err := svc.GetTokens(context.Background(), "0xABC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if market.calls != 1 {
+		t.Fatalf("market enricher calls = %d, want 1", market.calls)
+	}
+	for _, tok := range market.seen {
+		if tok.Symbol == "SCAM" {
+			t.Fatal("SCAM must be filtered before market enrichment")
+		}
+	}
+	if !reflect.DeepEqual(got.Tokens, market.out) {
+		t.Errorf("tokens = %+v, want enricher output %+v", got.Tokens, market.out)
+	}
+}
+
+func TestGetTokensMarketEnrichmentRunsAfterCacheHitFiltering(t *testing.T) {
+	cached := &TokenPortfolio{Address: "0xabc", Network: "eth-mainnet", Tokens: []Token{
+		{TokenAddress: nil, Symbol: "ETH", Decimals: 18, RawBalance: "0", Balance: "0", IsNative: true},
+		{TokenAddress: usdc("0xSPAM"), Symbol: "SCAM", Decimals: 18, RawBalance: "1", Balance: "0"},
+	}}
+	market := &fakeMarketEnricher{out: []Token{{Symbol: "CACHE_ENRICHED"}}}
+	svc := NewService(&fakeAlchemy{}, &fakeTokenStore{saved: cached, fresh: true}, &fakeTxCache{}, allowUSDC(), denyValidator(), market, "eth-mainnet", time.Minute)
+
+	got, err := svc.GetTokens(context.Background(), "0xABC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if market.calls != 1 {
+		t.Fatalf("market enricher calls = %d, want 1", market.calls)
+	}
+	for _, tok := range market.seen {
+		if tok.Symbol == "SCAM" {
+			t.Fatal("SCAM must be filtered before market enrichment")
+		}
+	}
+	if !reflect.DeepEqual(got.Tokens, market.out) {
+		t.Errorf("tokens = %+v, want enricher output %+v", got.Tokens, market.out)
+	}
+}
+
 func TestGetTokensWrapsUpstreamError(t *testing.T) {
 	fa := &fakeAlchemy{err: context.DeadlineExceeded}
-	svc := NewService(fa, &fakeTokenStore{}, &fakeTxCache{}, allowUSDC(), denyValidator(), "eth-mainnet", time.Minute)
+	svc := NewService(fa, &fakeTokenStore{}, &fakeTxCache{}, allowUSDC(), denyValidator(), nil, "eth-mainnet", time.Minute)
 	_, err := svc.GetTokens(context.Background(), "0xABC")
 	if err == nil || !errorsIs(err, ErrUpstream) {
 		t.Errorf("expected ErrUpstream, got %v", err)
@@ -174,7 +224,7 @@ func TestGetTokensWrapsSaveError(t *testing.T) {
 		{TokenAddress: nil, Symbol: "ETH", Decimals: 18, RawBalance: "1500000000000000000"},
 	}}
 	ts := &fakeTokenStore{saveErr: errors.New("db down")}
-	svc := NewService(fa, ts, &fakeTxCache{}, allowUSDC(), denyValidator(), "eth-mainnet", time.Minute)
+	svc := NewService(fa, ts, &fakeTxCache{}, allowUSDC(), denyValidator(), nil, "eth-mainnet", time.Minute)
 
 	_, err := svc.GetTokens(context.Background(), "0xABC")
 	if err == nil || !errorsIs(err, ErrStore) {
@@ -191,7 +241,7 @@ func TestGetTransactionsCacheMissFiltersAndSaves(t *testing.T) {
 		{Hash: "0x3", From: "0xabc", To: "0xdef", Asset: "SCAM", Value: "999", BlockNum: "0x22", Category: "erc20"},
 	}}}
 	tc := &fakeTxCache{}
-	svc := NewService(fa, &fakeTokenStore{}, tc, allowUSDC(), denyValidator(), "eth-mainnet", time.Minute)
+	svc := NewService(fa, &fakeTokenStore{}, tc, allowUSDC(), denyValidator(), nil, "eth-mainnet", time.Minute)
 
 	page, err := svc.GetTransactions(context.Background(), "0xABC", 25, "")
 	if err != nil {
@@ -220,7 +270,7 @@ func TestGetTransactionsCacheHitFilters(t *testing.T) {
 	}}
 	fa := &fakeAlchemy{}
 	tc := &fakeTxCache{saved: cached, fresh: true}
-	svc := NewService(fa, &fakeTokenStore{}, tc, allowUSDC(), denyValidator(), "eth-mainnet", time.Minute)
+	svc := NewService(fa, &fakeTokenStore{}, tc, allowUSDC(), denyValidator(), nil, "eth-mainnet", time.Minute)
 
 	page, err := svc.GetTransactions(context.Background(), "0xABC", 25, "")
 	if err != nil {
@@ -237,7 +287,7 @@ func TestGetTransactionsCacheHitFilters(t *testing.T) {
 func TestGetTransactionsPageKeyBypassesCache(t *testing.T) {
 	fa := &fakeAlchemy{transfers: alchemy.TransfersResult{Transfers: []alchemy.Transfer{{Hash: "0x2", Asset: "ETH"}}}}
 	tc := &fakeTxCache{saved: &TransactionPage{Transfers: []Transfer{{Hash: "0xcached", Asset: "ETH"}}}, fresh: true}
-	svc := NewService(fa, &fakeTokenStore{}, tc, allowUSDC(), denyValidator(), "eth-mainnet", time.Minute)
+	svc := NewService(fa, &fakeTokenStore{}, tc, allowUSDC(), denyValidator(), nil, "eth-mainnet", time.Minute)
 
 	page, err := svc.GetTransactions(context.Background(), "0xABC", 25, "PAGEKEY123")
 	if err != nil {
@@ -259,7 +309,7 @@ func TestGetTokensKeepsValidatedUnlistedToken(t *testing.T) {
 		{TokenAddress: usdc("0xFEE7"), Symbol: "pepe", Name: "old", Decimals: 9, RawBalance: "12500000"},
 	}}
 	v := &fakeValidator{result: Validation{Valid: true, Symbol: "PEPE", Name: "Pepe", LogoURI: "https://logo/pepe.png", Decimals: 18}}
-	svc := NewService(fa, &fakeTokenStore{}, &fakeTxCache{}, allowUSDC(), v, "eth-mainnet", time.Minute)
+	svc := NewService(fa, &fakeTokenStore{}, &fakeTxCache{}, allowUSDC(), v, nil, "eth-mainnet", time.Minute)
 
 	p, err := svc.GetTokens(context.Background(), "0xABC")
 	if err != nil {
@@ -287,7 +337,7 @@ func TestGetTokensDropsInvalidUnlistedToken(t *testing.T) {
 	fa := &fakeAlchemy{tokens: []alchemy.Token{
 		{TokenAddress: usdc("0xSPAM"), Symbol: "SCAM", Decimals: 18, RawBalance: "999"},
 	}}
-	svc := NewService(fa, &fakeTokenStore{}, &fakeTxCache{}, allowUSDC(), denyValidator(), "eth-mainnet", time.Minute)
+	svc := NewService(fa, &fakeTokenStore{}, &fakeTxCache{}, allowUSDC(), denyValidator(), nil, "eth-mainnet", time.Minute)
 	p, err := svc.GetTokens(context.Background(), "0xABC")
 	if err != nil {
 		t.Fatal(err)
@@ -312,7 +362,7 @@ func TestGetNativeTokensMapsLifiToken(t *testing.T) {
 		nativeFetchedAt: fetchedAt,
 		nativeOK:        true,
 	}
-	svc := NewService(&fakeAlchemy{}, &fakeTokenStore{}, &fakeTxCache{}, allow, denyValidator(), "eth-mainnet", time.Minute)
+	svc := NewService(&fakeAlchemy{}, &fakeTokenStore{}, &fakeTxCache{}, allow, denyValidator(), nil, "eth-mainnet", time.Minute)
 
 	got, err := svc.GetNativeTokens(context.Background())
 	if err != nil {
@@ -340,13 +390,37 @@ func TestGetNativeTokensMapsLifiToken(t *testing.T) {
 	}
 }
 
+func TestGetNativeTokensMarketEnrichmentRunsAfterLifiConstruction(t *testing.T) {
+	allow := &fakeAllowlist{
+		native:          lifi.ListToken{Symbol: "ETH", Name: "Ethereum", Decimals: 18, PriceUSD: "3200.50"},
+		nativeFetchedAt: time.Date(2026, 7, 22, 12, 30, 0, 0, time.UTC),
+		nativeOK:        true,
+	}
+	market := &fakeMarketEnricher{out: []Token{{Symbol: "MARKET_ETH"}}}
+	svc := NewService(&fakeAlchemy{}, &fakeTokenStore{}, &fakeTxCache{}, allow, denyValidator(), market, "eth-mainnet", time.Minute)
+
+	got, err := svc.GetNativeTokens(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if market.calls != 1 {
+		t.Fatalf("market enricher calls = %d, want 1", market.calls)
+	}
+	if len(market.seen) != 1 || market.seen[0].Symbol != "ETH" || !market.seen[0].IsNative {
+		t.Errorf("enricher saw %+v, want completed native ETH token", market.seen)
+	}
+	if !reflect.DeepEqual(got, market.out) {
+		t.Errorf("tokens = %+v, want enricher output %+v", got, market.out)
+	}
+}
+
 func TestGetNativeTokensLeavesOptionalMetadataNil(t *testing.T) {
 	allow := &fakeAllowlist{
 		native:          lifi.ListToken{Symbol: "ETH", Name: "Ethereum", Decimals: 18, PriceUSD: "3200.50"},
 		nativeFetchedAt: time.Date(2026, 7, 22, 12, 30, 0, 0, time.UTC),
 		nativeOK:        true,
 	}
-	svc := NewService(&fakeAlchemy{}, &fakeTokenStore{}, &fakeTxCache{}, allow, denyValidator(), "eth-mainnet", time.Minute)
+	svc := NewService(&fakeAlchemy{}, &fakeTokenStore{}, &fakeTxCache{}, allow, denyValidator(), nil, "eth-mainnet", time.Minute)
 
 	got, err := svc.GetNativeTokens(context.Background())
 	if err != nil {
@@ -366,7 +440,7 @@ func TestGetNativeTokensTrimsPrice(t *testing.T) {
 		nativeFetchedAt: time.Date(2026, 7, 22, 12, 30, 0, 0, time.UTC),
 		nativeOK:        true,
 	}
-	svc := NewService(&fakeAlchemy{}, &fakeTokenStore{}, &fakeTxCache{}, allow, denyValidator(), "eth-mainnet", time.Minute)
+	svc := NewService(&fakeAlchemy{}, &fakeTokenStore{}, &fakeTxCache{}, allow, denyValidator(), nil, "eth-mainnet", time.Minute)
 
 	got, err := svc.GetNativeTokens(context.Background())
 	if err != nil {
@@ -397,7 +471,7 @@ func TestGetNativeTokensUnavailable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			svc := NewService(&fakeAlchemy{}, &fakeTokenStore{}, &fakeTxCache{}, tt.allow, denyValidator(), "eth-mainnet", time.Minute)
+			svc := NewService(&fakeAlchemy{}, &fakeTokenStore{}, &fakeTxCache{}, tt.allow, denyValidator(), nil, "eth-mainnet", time.Minute)
 			got, err := svc.GetNativeTokens(context.Background())
 			if got != nil {
 				t.Errorf("tokens = %+v, want nil", got)
