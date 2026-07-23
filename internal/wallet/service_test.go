@@ -89,6 +89,51 @@ func TestGetTokensDropsUnknownTokens(t *testing.T) {
 	}
 }
 
+func TestGetTokensEnrichesNativeMetadataWhenAlchemyOmitsIt(t *testing.T) {
+	allow := allowUSDC()
+	allow.native = lifi.ListToken{Symbol: "ETH", Name: "Ethereum", Decimals: 18, PriceUSD: "3200.50"}
+	allow.nativeFetchedAt = time.Date(2026, 7, 22, 12, 30, 0, 0, time.UTC)
+	allow.nativeOK = true
+
+	fa := &fakeAlchemy{tokens: []alchemy.Token{{
+		TokenAddress: nil, RawBalance: "2945090757010143844", Decimals: 0,
+	}}}
+	svc := NewService(fa, &fakeTokenStore{}, &fakeTxCache{}, allow, denyValidator(), nil, "eth-mainnet", time.Minute)
+
+	portfolio, err := svc.GetTokens(context.Background(), "0xABC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(portfolio.Tokens) != 1 {
+		t.Fatalf("tokens = %+v, want one native token", portfolio.Tokens)
+	}
+	native := portfolio.Tokens[0]
+	if native.Symbol != "ETH" || native.Name != "Ethereum" || native.Decimals != 18 {
+		t.Fatalf("native metadata = %+v, want ETH/Ethereum/18", native)
+	}
+	if native.Balance != "2.945090757010143844" {
+		t.Errorf("native balance = %q, want scaled balance", native.Balance)
+	}
+}
+
+func TestGetTokensCacheHitEnrichesNativeMetadataWhenAlchemyOmitsIt(t *testing.T) {
+	allow := allowUSDC()
+	allow.native = lifi.ListToken{Symbol: "ETH", Name: "Ethereum", Decimals: 18}
+	allow.nativeOK = true
+	cached := &TokenPortfolio{Address: "0xabc", Network: "eth-mainnet", Tokens: []Token{{
+		IsNative: true, RawBalance: "1000000000000000000", Balance: "1000000000000000000",
+	}}}
+
+	svc := NewService(&fakeAlchemy{}, &fakeTokenStore{saved: cached, fresh: true}, &fakeTxCache{}, allow, denyValidator(), nil, "eth-mainnet", time.Minute)
+	portfolio, err := svc.GetTokens(context.Background(), "0xABC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(portfolio.Tokens) != 1 || portfolio.Tokens[0].Symbol != "ETH" || portfolio.Tokens[0].Name != "Ethereum" {
+		t.Fatalf("cached native metadata = %+v, want ETH/Ethereum", portfolio.Tokens)
+	}
+}
+
 func TestGetTokensRescalesBalanceOnDecimalsOverride(t *testing.T) {
 	// Alchemy reports decimals=18 for an address the allowlist says is 6 decimals.
 	fa := &fakeAlchemy{tokens: []alchemy.Token{

@@ -168,6 +168,9 @@ func (s *Service) filterTokens(ctx context.Context, p *TokenPortfolio) *TokenPor
 	out.Tokens = make([]Token, 0, len(p.Tokens))
 	for _, t := range p.Tokens {
 		if t.IsNative || t.TokenAddress == nil {
+			if lt, _, ok := s.allow.LookupNative(); ok {
+				t = enrichToken(t, lt)
+			}
 			out.Tokens = append(out.Tokens, t)
 			continue
 		}
