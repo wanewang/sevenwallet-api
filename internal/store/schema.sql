@@ -62,3 +62,15 @@ CREATE TABLE IF NOT EXISTS coingecko_coin_mappings (
 
 CREATE INDEX IF NOT EXISTS coingecko_coin_mappings_lookup_idx
     ON coingecko_coin_mappings (chain, address);
+
+CREATE TABLE IF NOT EXISTS coingecko_market_data (
+    chain                TEXT        NOT NULL,
+    token_key            TEXT        NOT NULL,
+    coingecko_id         TEXT        NOT NULL,
+    price_usd            NUMERIC,
+    change_24h_percent   NUMERIC,
+    market_cap_usd       NUMERIC,
+    market_updated_at    TIMESTAMPTZ,
+    fetched_at           TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (chain, token_key)
+);

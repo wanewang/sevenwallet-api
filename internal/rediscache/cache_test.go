@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"wallet-api/internal/lifi"
+	"wallet-api/internal/marketdata"
 	"wallet-api/internal/tokenvalidity"
 )
 
@@ -27,6 +28,21 @@ func newTestCache(t *testing.T) *Cache {
 	_, _ = c.client.Del(ctx, key("ETH")).Result()
 	t.Cleanup(func() { _ = c.Close() })
 	return c
+}
+
+func deleteMarketKeys(t *testing.T, c *Cache, keys ...marketdata.Key) {
+	t.Helper()
+	ctx := context.Background()
+	redisKeys := make([]string, 0, len(keys))
+	for _, k := range keys {
+		redisKeys = append(redisKeys, marketKey(k))
+	}
+	if len(redisKeys) > 0 {
+		if err := c.client.Del(ctx, redisKeys...).Err(); err != nil {
+			t.Fatalf("delete market keys: %v", err)
+		}
+		t.Cleanup(func() { _ = c.client.Del(context.Background(), redisKeys...).Err() })
+	}
 }
 
 func TestRedisSaveAndLoadTokenList(t *testing.T) {
@@ -76,5 +92,88 @@ func TestRedisSaveAndLoadTokenMeta(t *testing.T) {
 	}
 	if !got.FetchedAt.Equal(at) {
 		t.Errorf("fetchedAt = %v, want %v", got.FetchedAt, at)
+	}
+}
+
+func TestMarketDataBatchRoundTripAndTTL(t *testing.T) {
+	c := newTestCache(t)
+	ctx := context.Background()
+	key1 := marketdata.ContractKey("ethereum", "0xA0B8")
+	key2 := marketdata.NativeKey("Ethereum", "ETH")
+	missing := marketdata.ContractKey("ethereum", "0xmissing")
+	deleteMarketKeys(t, c, key1, key2, missing)
+
+	price := "1.0001"
+	change := -0.25
+	capUSD := 32_000_000_000.0
+	updatedAt := time.Unix(1_784_781_600, 0).UTC()
+	fetchedAt := time.Unix(2_000, 0).UTC()
+	first := marketdata.Record{
+		Key: key1, CoinGeckoID: "usd-coin", PriceUSD: &price, Change24HPercent: &change,
+		MarketCapUSD: &capUSD, MarketDataUpdatedAt: &updatedAt, FetchedAt: fetchedAt,
+	}
+	second := marketdata.Record{Key: key2, CoinGeckoID: "ethereum", FetchedAt: fetchedAt}
+	if err := c.SaveMarketData(ctx, []marketdata.CacheWrite{{Record: first, TTL: 10 * time.Minute}, {Record: second, TTL: 10 * time.Minute}}); err != nil {
+		t.Fatalf("SaveMarketData: %v", err)
+	}
+
+	ttl, err := c.client.TTL(ctx, marketKey(key1)).Result()
+	if err != nil {
+		t.Fatalf("TTL: %v", err)
+	}
+	if ttl <= 9*time.Minute || ttl > 10*time.Minute {
+		t.Fatalf("market TTL = %v, want about 10m and not the LI.FI safety TTL", ttl)
+	}
+
+	newPrice := "1.0002"
+	first.PriceUSD = &newPrice
+	first.CoinGeckoID = "usd-coin-updated"
+	if err := c.SaveMarketData(ctx, []marketdata.CacheWrite{{Record: first, TTL: 10 * time.Minute}}); err != nil {
+		t.Fatalf("SaveMarketData upsert: %v", err)
+	}
+	got, err := c.LoadMarketData(ctx, []marketdata.Key{key1, key2, missing})
+	if err != nil {
+		t.Fatalf("LoadMarketData: %v", err)
+	}
+	if len(got) != 2 || got[key1].CoinGeckoID != "usd-coin-updated" || got[key1].PriceUSD == nil || *got[key1].PriceUSD != newPrice {
+		t.Fatalf("loaded market data = %#v", got)
+	}
+	if got[key2].PriceUSD != nil || got[key2].MarketDataUpdatedAt != nil {
+		t.Fatalf("nullable record = %#v", got[key2])
+	}
+}
+
+func TestMarketDataOlderRedisWriteCannotReplaceOrExtendNewerRecord(t *testing.T) {
+	c := newTestCache(t)
+	ctx := context.Background()
+	key := marketdata.ContractKey("ethereum", "0xA0B8")
+	deleteMarketKeys(t, c, key)
+	newPrice := "2.00"
+	oldPrice := "1.00"
+	newer := marketdata.Record{Key: key, CoinGeckoID: "newer", PriceUSD: &newPrice, FetchedAt: time.Unix(2_000, 0).UTC()}
+	older := marketdata.Record{Key: key, CoinGeckoID: "older", PriceUSD: &oldPrice, FetchedAt: time.Unix(1_000, 0).UTC()}
+	if err := c.SaveMarketData(ctx, []marketdata.CacheWrite{{Record: newer, TTL: 10 * time.Minute}}); err != nil {
+		t.Fatalf("newer SaveMarketData: %v", err)
+	}
+	before, err := c.client.TTL(ctx, marketKey(key)).Result()
+	if err != nil {
+		t.Fatalf("TTL before stale write: %v", err)
+	}
+	if err := c.SaveMarketData(ctx, []marketdata.CacheWrite{{Record: older, TTL: time.Hour}}); err != nil {
+		t.Fatalf("older SaveMarketData: %v", err)
+	}
+	after, err := c.client.TTL(ctx, marketKey(key)).Result()
+	if err != nil {
+		t.Fatalf("TTL after stale write: %v", err)
+	}
+	got, err := c.LoadMarketData(ctx, []marketdata.Key{key})
+	if err != nil {
+		t.Fatalf("LoadMarketData: %v", err)
+	}
+	if got[key].CoinGeckoID != "newer" || got[key].PriceUSD == nil || *got[key].PriceUSD != newPrice {
+		t.Fatalf("older write replaced newer record: %#v", got[key])
+	}
+	if after > before+time.Second {
+		t.Fatalf("older write extended TTL from %v to %v", before, after)
 	}
 }

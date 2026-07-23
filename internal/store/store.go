@@ -310,3 +310,86 @@ func (s *Postgres) SaveTokenMeta(ctx context.Context, chain, address string, r t
 		chain, address, r.PossibleSpam, r.Verified, r.Symbol, r.Name, r.Logo, r.Decimals, r.FetchedAt)
 	return err
 }
+
+// LoadMarketData loads only the requested CoinGecko market keys in one query.
+func (s *Postgres) LoadMarketData(ctx context.Context, keys []marketdata.Key) (map[marketdata.Key]marketdata.Record, error) {
+	result := make(map[marketdata.Key]marketdata.Record, len(keys))
+	if len(keys) == 0 {
+		return result, nil
+	}
+
+	chains := make([]string, len(keys))
+	tokenKeys := make([]string, len(keys))
+	for i, key := range keys {
+		chains[i] = key.Chain
+		tokenKeys[i] = key.TokenKey
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT m.chain, m.token_key, m.coingecko_id, m.price_usd,
+		       m.change_24h_percent, m.market_cap_usd, m.market_updated_at, m.fetched_at
+		FROM coingecko_market_data AS m
+		JOIN unnest($1::text[], $2::text[]) AS wanted(chain, token_key)
+		  ON m.chain=wanted.chain AND m.token_key=wanted.token_key`, chains, tokenKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var record marketdata.Record
+		var price *string
+		var change, marketCap *float64
+		var marketUpdatedAt *time.Time
+		if err := rows.Scan(&record.Chain, &record.TokenKey, &record.CoinGeckoID, &price,
+			&change, &marketCap, &marketUpdatedAt, &record.FetchedAt); err != nil {
+			return nil, err
+		}
+		record.PriceUSD = price
+		record.Change24HPercent = change
+		record.MarketCapUSD = marketCap
+		record.MarketDataUpdatedAt = marketUpdatedAt
+		result[record.Key] = record
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// SaveMarketData upserts CoinGecko market records in one PostgreSQL batch.
+// Older fetches cannot replace newer records.
+func (s *Postgres) SaveMarketData(ctx context.Context, records []marketdata.Record) error {
+	if len(records) == 0 {
+		return nil
+	}
+
+	var batch pgx.Batch
+	for _, record := range records {
+		batch.Queue(`
+			INSERT INTO coingecko_market_data
+			(chain, token_key, coingecko_id, price_usd, change_24h_percent,
+			 market_cap_usd, market_updated_at, fetched_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+			ON CONFLICT (chain, token_key) DO UPDATE SET
+			  coingecko_id=EXCLUDED.coingecko_id,
+			  price_usd=EXCLUDED.price_usd,
+			  change_24h_percent=EXCLUDED.change_24h_percent,
+			  market_cap_usd=EXCLUDED.market_cap_usd,
+			  market_updated_at=EXCLUDED.market_updated_at,
+			  fetched_at=EXCLUDED.fetched_at
+			WHERE EXCLUDED.fetched_at >= coingecko_market_data.fetched_at`,
+			record.Chain, record.TokenKey, record.CoinGeckoID, record.PriceUSD,
+			record.Change24HPercent, record.MarketCapUSD, record.MarketDataUpdatedAt,
+			record.FetchedAt)
+	}
+
+	results := s.pool.SendBatch(ctx, &batch)
+	defer results.Close()
+	for range records {
+		if _, err := results.Exec(); err != nil {
+			return err
+		}
+	}
+	return nil
+}

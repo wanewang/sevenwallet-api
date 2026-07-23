@@ -29,7 +29,7 @@ func newTestStore(t *testing.T) *Postgres {
 		t.Fatalf("Migrate: %v", err)
 	}
 	// Clean slate.
-	_, _ = s.pool.Exec(ctx, "TRUNCATE wallet_tokens, token_fetch_meta, tx_cache, lifi_token_lists, token_metadata, coingecko_coin_mappings")
+	_, _ = s.pool.Exec(ctx, "TRUNCATE wallet_tokens, token_fetch_meta, tx_cache, lifi_token_lists, token_metadata, coingecko_coin_mappings, coingecko_market_data")
 	t.Cleanup(s.Close)
 	return s
 }
@@ -296,5 +296,71 @@ func TestReplaceCoinMappingsRollsBack(t *testing.T) {
 	got, ok, err := s.LoadCoinMappings(ctx)
 	if err != nil || !ok || !reflect.DeepEqual(got, original) {
 		t.Fatalf("LoadCoinMappings after rollback ok=%v err=%v got=%#v", ok, err, got)
+	}
+}
+
+func TestMarketDataBatchRoundTripAndRequestedKeys(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	price := "1.0001"
+	change := -0.25
+	capUSD := 32_000_000_000.0
+	updatedAt := time.Unix(1_784_781_600, 0).UTC()
+	fetchedAt := time.Unix(2_000, 0).UTC()
+	first := marketdata.Record{
+		Key: marketdata.ContractKey("ethereum", "0xA0B8"), CoinGeckoID: "usd-coin",
+		PriceUSD: &price, Change24HPercent: &change, MarketCapUSD: &capUSD,
+		MarketDataUpdatedAt: &updatedAt, FetchedAt: fetchedAt,
+	}
+	second := marketdata.Record{
+		Key: marketdata.NativeKey("Ethereum", "ETH"), CoinGeckoID: "ethereum", FetchedAt: fetchedAt,
+	}
+	if err := s.SaveMarketData(ctx, []marketdata.Record{first, second}); err != nil {
+		t.Fatalf("SaveMarketData: %v", err)
+	}
+
+	newPrice := "1.0002"
+	first.PriceUSD = &newPrice
+	first.CoinGeckoID = "usd-coin-updated"
+	if err := s.SaveMarketData(ctx, []marketdata.Record{first}); err != nil {
+		t.Fatalf("SaveMarketData upsert: %v", err)
+	}
+
+	wanted := []marketdata.Key{first.Key, second.Key, marketdata.ContractKey("ethereum", "0xmissing")}
+	got, err := s.LoadMarketData(ctx, wanted)
+	if err != nil {
+		t.Fatalf("LoadMarketData: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("LoadMarketData returned %d records, want 2: %#v", len(got), got)
+	}
+	if got[first.Key].CoinGeckoID != "usd-coin-updated" || got[first.Key].PriceUSD == nil || *got[first.Key].PriceUSD != newPrice {
+		t.Fatalf("updated record = %#v", got[first.Key])
+	}
+	if got[second.Key].CoinGeckoID != "ethereum" || got[second.Key].PriceUSD != nil || got[second.Key].MarketDataUpdatedAt != nil {
+		t.Fatalf("nullable record = %#v", got[second.Key])
+	}
+}
+
+func TestMarketDataOlderPostgresWriteCannotReplaceNewerRecord(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	key := marketdata.ContractKey("ethereum", "0xA0B8")
+	newPrice := "2.00"
+	oldPrice := "1.00"
+	newer := marketdata.Record{Key: key, CoinGeckoID: "newer", PriceUSD: &newPrice, FetchedAt: time.Unix(2_000, 0).UTC()}
+	older := marketdata.Record{Key: key, CoinGeckoID: "older", PriceUSD: &oldPrice, FetchedAt: time.Unix(1_000, 0).UTC()}
+	if err := s.SaveMarketData(ctx, []marketdata.Record{newer}); err != nil {
+		t.Fatalf("newer SaveMarketData: %v", err)
+	}
+	if err := s.SaveMarketData(ctx, []marketdata.Record{older}); err != nil {
+		t.Fatalf("older SaveMarketData: %v", err)
+	}
+	got, err := s.LoadMarketData(ctx, []marketdata.Key{key})
+	if err != nil {
+		t.Fatalf("LoadMarketData: %v", err)
+	}
+	if got[key].CoinGeckoID != "newer" || got[key].PriceUSD == nil || *got[key].PriceUSD != newPrice {
+		t.Fatalf("older write replaced newer record: %#v", got[key])
 	}
 }
