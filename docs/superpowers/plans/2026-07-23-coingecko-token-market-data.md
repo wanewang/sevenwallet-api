@@ -16,6 +16,7 @@
 - Send `Accept: application/json` and the configured `User-Agent` on every CoinGecko request.
 - Coin-list refresh defaults to `21600` seconds and atomically preserves the last usable snapshot on every failure.
 - Market freshness defaults to `1800` seconds and is measured from the original CoinGecko `fetched_at`; promoting a PostgreSQL record to Redis never resets freshness.
+- Concurrent market-data writes are monotonic by `fetched_at`: an older fetch must never replace a newer PostgreSQL or Redis record, even when its write completes later.
 - Request-time enrichment defaults to one total five-second budget across Redis, PostgreSQL, all price batches, retry waits, and cache writes.
 - Each `/simple/price` batch gets one initial attempt plus three retries, with one context-aware one-second delay before each retry.
 - Retry network/read/decode errors, HTTP 429, and HTTP 5xx; do not retry other HTTP 4xx responses.
@@ -660,7 +661,7 @@ func TestKeysNormalizeDefinedParts(t *testing.T) {
 
 - [ ] **Step 2: Write failing PostgreSQL/Redis integration tests**
 
-For PostgreSQL, first add `coingecko_market_data` to `newTestStore`'s cleanup statement, then round-trip two records with nullable fields, upsert one changed ID/value, and prove batch load returns only requested keys. For Redis, explicitly delete the test market keys during setup/cleanup, save/load two records, and inspect Redis TTL to prove a 10-minute `CacheWrite` does not use the LI.FI list safety TTL.
+For PostgreSQL, first add `coingecko_market_data` to `newTestStore`'s cleanup statement, then round-trip two records with nullable fields, upsert one changed ID/value, and prove batch load returns only requested keys. Add an out-of-order write case that saves a newer record and then an older record for the same key; loading the key must still return the newer record. For Redis, explicitly delete the test market keys during setup/cleanup, save/load two records, and inspect Redis TTL to prove a 10-minute `CacheWrite` does not use the LI.FI list safety TTL. Add the same out-of-order case and assert that an older write cannot replace the newer JSON payload or extend its freshness.
 
 Use this record shape:
 
@@ -731,7 +732,7 @@ func (s *Postgres) LoadMarketData(ctx context.Context, keys []marketdata.Key) (m
 func (s *Postgres) SaveMarketData(ctx context.Context, records []marketdata.Record) error
 ```
 
-Load with one query joined to `unnest($1::text[], $2::text[]) AS wanted(chain, token_key)`. Scan price as nullable string, change/cap as nullable float64, and update time as nullable `time.Time`. Save all upserts in one `pgx.Batch`; return early for empty input.
+Load with one query joined to `unnest($1::text[], $2::text[]) AS wanted(chain, token_key)`. Scan price as nullable string, change/cap as nullable float64, and update time as nullable `time.Time`. Save all upserts in one `pgx.Batch`; use `ON CONFLICT (chain, token_key) DO UPDATE` with a `WHERE EXCLUDED.fetched_at >= coingecko_market_data.fetched_at` guard so a late older fetch is a no-op; return early for empty input.
 
 - [ ] **Step 6: Add Redis `MGET` and pipelined writes**
 
@@ -746,7 +747,7 @@ func (c *Cache) LoadMarketData(ctx context.Context, keys []marketdata.Key) (map[
 func (c *Cache) SaveMarketData(ctx context.Context, writes []marketdata.CacheWrite) error
 ```
 
-`LoadMarketData` performs one `MGet`, skips nils, logs malformed individual JSON values, and preserves valid hits. `SaveMarketData` pre-marshals positive-TTL writes and runs all `SET` calls in one pipeline. It must use each `CacheWrite.TTL`, never `Cache.ttl`.
+`LoadMarketData` performs one `MGet`, skips nils, logs malformed individual JSON values, and preserves valid hits. `SaveMarketData` pre-marshals positive-TTL writes and runs all writes in one pipeline. Each write must be an atomic timestamp-guarded compare-and-set, not an unconditional `SET`: include a normalized numeric `fetchedAtUnixNano` in the Redis envelope (or equivalent version metadata), and use a small Lua script in the pipeline to update the payload and TTL only when the incoming timestamp is at least as new as the stored timestamp. It must use each `CacheWrite.TTL`, never `Cache.ttl`, and an older rejected write must not extend the existing key's TTL.
 
 Update the package and `Cache` comments so `internal/rediscache` accurately describes LI.FI, Moralis, and CoinGecko caching rather than claiming it stores only the LI.FI token list.
 
