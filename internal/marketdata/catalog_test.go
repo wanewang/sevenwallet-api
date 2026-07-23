@@ -64,6 +64,24 @@ func TestBuildMappingsUsesNativeForNoUsablePlatform(t *testing.T) {
 	}
 }
 
+func TestBuildMappingsSkipsBlankSymbolNativeButPreservesContracts(t *testing.T) {
+	fetchedAt := time.Unix(1_700_000_000, 0).UTC()
+	coins := []coingecko.Coin{
+		{ID: "malformed-native", Name: "Malformed", Symbol: " ", Platforms: map[string]string{}},
+		{ID: "contract-token", Name: "Contract Token", Symbol: " ", Platforms: map[string]string{
+			"ethereum": "0xABC",
+		}},
+	}
+
+	got := BuildMappings(coins, fetchedAt)
+	want := []CoinMapping{{
+		ID: "contract-token", Name: "Contract Token", Symbol: "", Chain: "ethereum", Address: "0xabc", FetchedAt: fetchedAt,
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("mappings = %#v, want %#v", got, want)
+	}
+}
+
 func TestBuildMappingsSkipsBlankIDsAndLeavesLookupsUnresolved(t *testing.T) {
 	coins := []coingecko.Coin{
 		{ID: " ", Symbol: " ETH ", Platforms: map[string]string{

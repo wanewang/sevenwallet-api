@@ -56,7 +56,7 @@ func BuildMappings(coins []coingecko.Coin, fetchedAt time.Time) []CoinMapping {
 			})
 		}
 
-		if !usablePlatform {
+		if !usablePlatform && symbol != "" {
 			mappings = append(mappings, CoinMapping{
 				ID:        id,
 				Name:      name,

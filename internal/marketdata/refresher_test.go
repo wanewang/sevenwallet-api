@@ -102,6 +102,29 @@ func TestBootstrapEmptyTransformedFetchFallsBackToPostgres(t *testing.T) {
 	}
 }
 
+func TestBootstrapBlankSymbolNativeFetchPreservesPriorSnapshot(t *testing.T) {
+	prior := NewCatalog(refresherMappings)
+	holder := Holder{}
+	holder.Set(prior)
+	store := &fakeCatalogStore{mappings: refresherMappings, present: true}
+	r := newTestRefresher(&fakeCoinListClient{coins: []coingecko.Coin{{ID: "malformed-native", Symbol: " "}}}, store, &holder)
+
+	r.Bootstrap(context.Background())
+
+	if store.replaceCalls != 0 {
+		t.Fatalf("blank-symbol native fetch was persisted: %d calls", store.replaceCalls)
+	}
+	if got := holder.Current(); got == nil || got.Count() != prior.Count() {
+		t.Fatalf("bootstrap did not preserve prior holder snapshot: got %#v", got)
+	}
+	if resolved, ok := holder.ResolveNative("eth", nil); !ok || resolved != "ethereum" {
+		t.Fatalf("bootstrap lost prior native lookup: (%q, %v)", resolved, ok)
+	}
+	if !store.present || len(store.mappings) != len(refresherMappings) {
+		t.Fatalf("prior postgres snapshot changed: present=%v mappings=%#v", store.present, store.mappings)
+	}
+}
+
 func TestBootstrapFetchFailureFallsBackToPostgres(t *testing.T) {
 	store := &fakeCatalogStore{mappings: refresherMappings, present: true}
 	var holder Holder
@@ -179,5 +202,25 @@ func TestFailedRefreshPreservesExactPriorCatalogPointer(t *testing.T) {
 
 	if holder.Current() != prior {
 		t.Fatalf("failed refresh changed holder pointer: got %p want %p", holder.Current(), prior)
+	}
+}
+
+func TestBlankSymbolNativeRefreshPreservesPriorSnapshot(t *testing.T) {
+	prior := NewCatalog(refresherMappings)
+	holder := Holder{}
+	holder.Set(prior)
+	store := &fakeCatalogStore{mappings: refresherMappings, present: true}
+	r := newTestRefresher(&fakeCoinListClient{coins: []coingecko.Coin{{ID: "malformed-native", Symbol: " "}}}, store, &holder)
+
+	r.refresh(context.Background())
+
+	if store.replaceCalls != 0 {
+		t.Fatalf("blank-symbol native refresh was persisted: %d calls", store.replaceCalls)
+	}
+	if holder.Current() != prior {
+		t.Fatalf("refresh changed prior holder pointer: got %p want %p", holder.Current(), prior)
+	}
+	if !store.present || len(store.mappings) != len(refresherMappings) {
+		t.Fatalf("prior postgres snapshot changed: present=%v mappings=%#v", store.present, store.mappings)
 	}
 }
