@@ -389,6 +389,12 @@ func TestMarketDataBatchRoundTripAndRequestedKeys(t *testing.T) {
 	if got[first.Key].CoinGeckoID != "usd-coin-updated" || got[first.Key].PriceUSD == nil || *got[first.Key].PriceUSD != newPrice {
 		t.Fatalf("updated record = %#v", got[first.Key])
 	}
+	if !reflect.DeepEqual(got[first.Key].FetchedAt, fetchedAt) {
+		t.Errorf("FetchedAt = %#v, want UTC timestamp %#v", got[first.Key].FetchedAt, fetchedAt)
+	}
+	if got[first.Key].MarketDataUpdatedAt == nil || !reflect.DeepEqual(*got[first.Key].MarketDataUpdatedAt, updatedAt) {
+		t.Errorf("MarketDataUpdatedAt = %#v, want UTC timestamp %#v", got[first.Key].MarketDataUpdatedAt, updatedAt)
+	}
 	if got[second.Key].CoinGeckoID != "ethereum" || got[second.Key].PriceUSD != nil || got[second.Key].MarketDataUpdatedAt != nil {
 		t.Fatalf("nullable record = %#v", got[second.Key])
 	}

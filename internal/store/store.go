@@ -269,6 +269,7 @@ func (s *Postgres) LoadCoinMappings(ctx context.Context) ([]marketdata.CoinMappi
 		if err := rows.Scan(&mapping.ID, &mapping.Name, &mapping.Symbol, &mapping.Chain, &mapping.Address, &mapping.FetchedAt); err != nil {
 			return nil, false, err
 		}
+		mapping.FetchedAt = mapping.FetchedAt.UTC()
 		mappings = append(mappings, mapping)
 	}
 	if err := rows.Err(); err != nil {
@@ -344,6 +345,11 @@ func (s *Postgres) LoadMarketData(ctx context.Context, keys []marketdata.Key) (m
 		if err := rows.Scan(&record.Chain, &record.TokenKey, &record.CoinGeckoID, &price,
 			&change, &marketCap, &marketUpdatedAt, &record.FetchedAt); err != nil {
 			return nil, err
+		}
+		record.FetchedAt = record.FetchedAt.UTC()
+		if marketUpdatedAt != nil {
+			updatedAt := marketUpdatedAt.UTC()
+			marketUpdatedAt = &updatedAt
 		}
 		record.PriceUSD = price
 		record.Change24HPercent = change
