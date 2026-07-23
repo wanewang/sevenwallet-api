@@ -43,14 +43,16 @@ CoinGecko references:
 - Use fresh CoinGecko USD price data to overwrite both existing token price
   representations.
 - Share CoinGecko market records across every wallet that holds the same token.
-- Read shared records from Redis first, then PostgreSQL, with a 30-minute
-  freshness window based on the original CoinGecko fetch time.
+- Read shared records from Redis first, then PostgreSQL, with a configurable
+  freshness window (default 30 minutes) based on the original CoinGecko fetch time.
 - Batch all stale or missing CoinGecko IDs from one wallet response into as few
   `/simple/price` requests as practical.
 - Retry a failed price request three times after the initial attempt, waiting
   one second before each retry.
 - Preserve endpoint availability when CoinGecko, Redis market caching, or
   CoinGecko-specific PostgreSQL operations fail.
+- Bound total request-time enrichment latency so a slow or degraded CoinGecko
+  cannot balloon wallet-endpoint response times.
 - Persist a queryable multi-platform CoinGecko mapping catalog and refresh it
   atomically every six hours.
 - Enrich native ETH as well as Ethereum ERC-20 tokens.
@@ -167,6 +169,7 @@ This package owns global market-data orchestration:
 - Batch Redis and PostgreSQL market-cache operations.
 - Fetch, retry, persist, and merge `/simple/price` data.
 - Apply the fresh/stale price-precedence rules.
+- Enforce a total enrichment time budget across all batches for one response.
 
 It implements a narrow interface consumed by `wallet.Service`, conceptually:
 
@@ -194,8 +197,7 @@ Redis implements:
 
 - One `MGET` for all mapped token identities in a wallet response.
 - Pipelined writes for fresh market records.
-- Per-record TTLs based on the remaining part of the original 30-minute
-  freshness window.
+- Per-record TTLs based on the remaining part of the original freshness window.
 
 Redis never stores the CoinGecko catalog or complete wallet portfolios.
 
@@ -306,7 +308,10 @@ Market cache identity is `(chain, token_key)`:
 
 Every record also stores `coingecko_id`. A cache record whose stored ID differs
 from the current catalog mapping is treated as a miss. This prevents old market
-data from surviving a mapping change.
+data from surviving a mapping change. The ID-match gate applies to every use of a
+record, including a stale record considered only for non-price fallback: a stale
+row whose ID no longer matches the current mapping is discarded, not used, so a
+re-mapped token never inherits another coin's stale change, cap, or timestamp.
 
 ### Stored record
 
@@ -325,17 +330,18 @@ fallback. Redis retains only the fresh cache entry.
 
 ### Freshness
 
-A record is fresh only while:
+The freshness window is `COINGECKO_MARKET_TTL_SECONDS` (default 30 minutes),
+denoted `ttl` below. A record is fresh only while:
 
 ```text
-now - fetched_at < 30 minutes
+now - fetched_at < ttl
 ```
 
 Freshness always uses the original CoinGecko fetch time. Loading a PostgreSQL
 record into Redis never resets it. The Redis TTL is:
 
 ```text
-30 minutes - (now - fetched_at)
+ttl - (now - fetched_at)
 ```
 
 If the remaining duration is non-positive, the row is stale and is not written
@@ -354,7 +360,8 @@ After existing portfolio loading and filtering:
 5. Batch-load only Redis misses from PostgreSQL.
 6. Accept fresh PostgreSQL rows and promote them to Redis using their remaining
    TTL.
-7. Retain stale PostgreSQL rows separately as possible non-price fallback.
+7. Retain stale PostgreSQL rows whose stored CoinGecko ID matches the current
+   mapping separately as possible non-price fallback; discard ID-mismatched rows.
 8. Collect the IDs still lacking fresh data.
 9. Fetch those IDs from `/simple/price` in chunks of at most 100 unique IDs.
 10. Apply successful results to the current response immediately.
@@ -399,6 +406,27 @@ The six-hour `/coins/list` refresher does not use this request-time retry loop.
 A failed list refresh keeps the prior snapshot and waits for the next scheduled
 run.
 
+## Enrichment time budget
+
+Because enrichment runs inline before the wallet response and price batches are
+sent sequentially, a slow or unreachable CoinGecko could otherwise stack per-batch
+timeouts and retry waits into a large response delay. Enrichment therefore runs
+under a single overall deadline, `COINGECKO_ENRICH_TIMEOUT_SECONDS`, derived from
+the request context:
+
+- The deadline covers the whole enrichment pass for one response, not each batch.
+- When it expires, in-flight and not-yet-sent CoinGecko fetches stop immediately.
+  Because retry waits are context-aware, an expiring deadline also cancels a
+  pending retry timer.
+- IDs left without a fresh result when the deadline expires fall through to the
+  same stale/`null` fallback rules used for a failed fetch. Already-applied fresh
+  results and cache writes from earlier batches are retained.
+
+The budget favors bounded latency over completeness: it may be shorter than the
+full retry ladder of a single batch, in which case remaining retries are
+abandoned and stale fallback covers those IDs. Cache-only responses (all IDs
+served from fresh Redis or PostgreSQL) do no CoinGecko work and are unaffected.
+
 ## Merge and fallback rules
 
 | CoinGecko state | Existing `price` and `priceUSD` | New market fields |
@@ -406,12 +434,14 @@ run.
 | Fresh Redis record | Overwrite with CoinGecko USD price when present | Use fresh values |
 | Fresh PostgreSQL record | Overwrite with CoinGecko USD price when present | Use fresh values |
 | New CoinGecko fetch succeeds | Overwrite immediately when USD is present | Use returned values |
-| All attempts fail and stale PostgreSQL row exists | Keep existing Alchemy/LI.FI price | Use stale change, cap, and market timestamp |
-| All attempts fail and no stale row exists | Keep existing Alchemy/LI.FI price | Return `null` |
+| All attempts fail and matching-ID stale PostgreSQL row exists | Keep existing Alchemy/LI.FI price | Use stale change, cap, and market timestamp |
+| All attempts fail and no matching-ID stale row exists | Keep existing Alchemy/LI.FI price | Return `null` |
 
-Stale CoinGecko USD price is never used. A record older than 30 minutes may
-provide stale `change24hPercent`, `marketCapUSD`, and
-`marketDataUpdatedAt` only.
+Stale CoinGecko USD price is never used. A stale record older than the freshness
+window may provide stale `change24hPercent`, `marketCapUSD`, and
+`marketDataUpdatedAt` only, and only when its stored CoinGecko ID still matches
+the current catalog mapping. An ID-mismatched stale row is treated as no stale
+row: the token keeps its existing price and returns `null` new fields.
 
 A successful CoinGecko result is merged into the current response before cache
 persistence. PostgreSQL or Redis write failure therefore does not discard fresh
@@ -482,9 +512,10 @@ endpoint.
 | `COINGECKO_PLATFORM` | `ethereum` | Contract lookup platform and market cache chain |
 | `COINGECKO_LIST_REFRESH_SECONDS` | `21600` | Coin mapping refresh interval |
 | `COINGECKO_MARKET_TTL_SECONDS` | `1800` | Shared market freshness window |
+| `COINGECKO_ENRICH_TIMEOUT_SECONDS` | `5` | Total request-time enrichment budget |
 | `COINGECKO_NATIVE_IDS` | `ethereum` | Comma-separated allowed native CoinGecko IDs |
 
-Refresh and TTL values must be positive integers. Native IDs are trimmed,
+Refresh, TTL, and enrichment-timeout values must be positive integers. Native IDs are trimmed,
 deduplicated, and must leave at least one non-empty value. Invalid configuration
 fails startup. CoinGecko network availability does not.
 
@@ -505,7 +536,10 @@ internal constants for this feature.
 
 - Redis read failure: batch-read PostgreSQL.
 - PostgreSQL market read failure: attempt CoinGecko without a stale fallback.
-- CoinGecko failure after retries: use stale non-price fields when available.
+- CoinGecko failure after retries: use stale non-price fields from a
+  matching-ID record when available; discard ID-mismatched stale rows.
+- Enrichment budget expires mid-pass: stop remaining CoinGecko work and apply
+  stale/`null` fallback to the unresolved IDs, keeping earlier fresh results.
 - PostgreSQL market write failure: log, still write Redis, and return fresh data.
 - Redis market write failure: log, keep PostgreSQL durability, and return fresh
   data.
@@ -563,10 +597,15 @@ These optional enrichment failures do not map to new HTTP error responses.
 - Multiple token identities sharing an ID use one fetched result.
 - Fresh CoinGecko price overwrites `price` and `priceUSD`.
 - Stale CoinGecko price does not overwrite existing price.
-- Stale change, cap, and market timestamp are used after all fetch attempts fail.
+- Stale change, cap, and market timestamp are used after all fetch attempts fail
+  only when the stale record's CoinGecko ID matches the current mapping.
+- An ID-mismatched stale row is discarded: existing price is kept and new fields
+  are null, as if no stale record existed.
 - No stale record preserves existing price and leaves new fields null.
 - Partial CoinGecko responses update only returned IDs and fields.
 - PostgreSQL and Redis write errors do not fail or discard the current response.
+- An expired enrichment budget stops further CoinGecko fetches, retains earlier
+  fresh results, and applies stale/`null` fallback to the remaining IDs.
 
 ### Wallet and API tests
 
@@ -582,7 +621,7 @@ These optional enrichment failures do not map to new HTTP error responses.
 
 - Every default is applied.
 - Every override is parsed.
-- Non-positive refresh/TTL values fail validation.
+- Non-positive refresh/TTL/enrichment-timeout values fail validation.
 - Native ID parsing trims and deduplicates values and rejects an empty list.
 
 ## Documentation and observability
