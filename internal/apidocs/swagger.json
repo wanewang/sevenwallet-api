@@ -191,6 +191,10 @@
                 "balance": {
                     "type": "string"
                 },
+                "change24hPercent": {
+                    "type": "number",
+                    "x-nullable": true
+                },
                 "coinKey": {
                     "type": "string"
                 },
@@ -202,6 +206,14 @@
                 },
                 "logoURI": {
                     "type": "string"
+                },
+                "marketCapUSD": {
+                    "type": "number",
+                    "x-nullable": true
+                },
+                "marketDataUpdatedAt": {
+                    "type": "string",
+                    "x-nullable": true
                 },
                 "name": {
                     "type": "string"

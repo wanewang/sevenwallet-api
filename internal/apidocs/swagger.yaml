@@ -18,6 +18,9 @@ definitions:
     properties:
       balance:
         type: string
+      change24hPercent:
+        type: number
+        x-nullable: true
       coinKey:
         type: string
       decimals:
@@ -26,6 +29,12 @@ definitions:
         type: boolean
       logoURI:
         type: string
+      marketCapUSD:
+        type: number
+        x-nullable: true
+      marketDataUpdatedAt:
+        type: string
+        x-nullable: true
       name:
         type: string
       price:

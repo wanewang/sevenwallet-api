@@ -36,9 +36,9 @@ type Token struct {
 	LogoURI             *string  `json:"logoURI,omitempty"`
 	CoinKey             *string  `json:"coinKey,omitempty"`
 	PriceUSD            *string  `json:"priceUSD,omitempty"`
-	Change24HPercent    *float64 `json:"change24hPercent"`
-	MarketCapUSD        *float64 `json:"marketCapUSD"`
-	MarketDataUpdatedAt *string  `json:"marketDataUpdatedAt"`
+	Change24HPercent    *float64 `json:"change24hPercent" extensions:"x-nullable"`
+	MarketCapUSD        *float64 `json:"marketCapUSD" extensions:"x-nullable"`
+	MarketDataUpdatedAt *string  `json:"marketDataUpdatedAt" extensions:"x-nullable"`
 }
 
 // TokenPortfolio is the current token snapshot for an address.
