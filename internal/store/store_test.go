@@ -3,11 +3,13 @@ package store
 import (
 	"context"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"wallet-api/internal/lifi"
+	"wallet-api/internal/marketdata"
 	"wallet-api/internal/tokenvalidity"
 	"wallet-api/internal/wallet"
 )
@@ -27,7 +29,7 @@ func newTestStore(t *testing.T) *Postgres {
 		t.Fatalf("Migrate: %v", err)
 	}
 	// Clean slate.
-	_, _ = s.pool.Exec(ctx, "TRUNCATE wallet_tokens, token_fetch_meta, tx_cache, lifi_token_lists, token_metadata")
+	_, _ = s.pool.Exec(ctx, "TRUNCATE wallet_tokens, token_fetch_meta, tx_cache, lifi_token_lists, token_metadata, coingecko_coin_mappings")
 	t.Cleanup(s.Close)
 	return s
 }
@@ -224,5 +226,75 @@ func TestSaveAndGetTokenMeta(t *testing.T) {
 	got2, _, _ := s.GetTokenMeta(ctx, "eth", "0xFEE7")
 	if !got2.PossibleSpam || got2.Symbol != "SPAM" {
 		t.Errorf("upsert did not overwrite: %+v", got2)
+	}
+}
+
+func TestLoadCoinMappingsAbsent(t *testing.T) {
+	s := newTestStore(t)
+	got, ok, err := s.LoadCoinMappings(context.Background())
+	if err != nil || ok || got != nil {
+		t.Fatalf("LoadCoinMappings empty ok=%v err=%v got=%#v", ok, err, got)
+	}
+}
+
+func TestReplaceAndLoadCoinMappings(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	fetchedAt := time.Now().UTC().Truncate(time.Second)
+	first := []marketdata.CoinMapping{
+		{ID: "ethereum", Name: "Ethereum", Symbol: "eth", Chain: "eth", Address: marketdata.NativeAddress, FetchedAt: fetchedAt},
+		{ID: "usd-coin", Name: "USDC", Symbol: "usdc", Chain: "ethereum", Address: "0xa0b8", FetchedAt: fetchedAt},
+	}
+	if err := s.ReplaceCoinMappings(ctx, first); err != nil {
+		t.Fatalf("ReplaceCoinMappings: %v", err)
+	}
+	got, ok, err := s.LoadCoinMappings(ctx)
+	if err != nil || !ok || !reflect.DeepEqual(got, first) {
+		t.Fatalf("LoadCoinMappings ok=%v err=%v got=%#v", ok, err, got)
+	}
+}
+
+func TestReplaceCoinMappingsReplacesAllRows(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	fetchedAt := time.Now().UTC().Truncate(time.Second)
+	first := []marketdata.CoinMapping{
+		{ID: "old-coin", Name: "Old", Symbol: "old", Chain: "ethereum", Address: "0xold", FetchedAt: fetchedAt},
+	}
+	second := []marketdata.CoinMapping{
+		{ID: "new-coin", Name: "New", Symbol: "new", Chain: "ethereum", Address: "0xnew", FetchedAt: fetchedAt},
+	}
+	if err := s.ReplaceCoinMappings(ctx, first); err != nil {
+		t.Fatalf("first ReplaceCoinMappings: %v", err)
+	}
+	if err := s.ReplaceCoinMappings(ctx, second); err != nil {
+		t.Fatalf("second ReplaceCoinMappings: %v", err)
+	}
+	got, ok, err := s.LoadCoinMappings(ctx)
+	if err != nil || !ok || !reflect.DeepEqual(got, second) {
+		t.Fatalf("LoadCoinMappings after replacement ok=%v err=%v got=%#v", ok, err, got)
+	}
+}
+
+func TestReplaceCoinMappingsRollsBack(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	fetchedAt := time.Now().UTC().Truncate(time.Second)
+	original := []marketdata.CoinMapping{
+		{ID: "ethereum", Name: "Ethereum", Symbol: "eth", Chain: "eth", Address: marketdata.NativeAddress, FetchedAt: fetchedAt},
+	}
+	if err := s.ReplaceCoinMappings(ctx, original); err != nil {
+		t.Fatalf("initial ReplaceCoinMappings: %v", err)
+	}
+	duplicate := []marketdata.CoinMapping{
+		{ID: "new-coin", Name: "New", Symbol: "new", Chain: "ethereum", Address: "0xnew", FetchedAt: fetchedAt},
+		{ID: "new-coin", Name: "Changed", Symbol: "new", Chain: "ethereum", Address: "0xnew", FetchedAt: fetchedAt},
+	}
+	if err := s.ReplaceCoinMappings(ctx, duplicate); err == nil {
+		t.Fatal("ReplaceCoinMappings duplicate input returned nil error")
+	}
+	got, ok, err := s.LoadCoinMappings(ctx)
+	if err != nil || !ok || !reflect.DeepEqual(got, original) {
+		t.Fatalf("LoadCoinMappings after rollback ok=%v err=%v got=%#v", ok, err, got)
 	}
 }

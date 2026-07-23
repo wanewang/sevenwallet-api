@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"wallet-api/internal/lifi"
+	"wallet-api/internal/marketdata"
 	"wallet-api/internal/tokenvalidity"
 	"wallet-api/internal/wallet"
 )
@@ -225,6 +226,55 @@ func (s *Postgres) LoadTokenList(ctx context.Context, chain string) ([]lifi.List
 		return nil, time.Time{}, false, err
 	}
 	return tokens, fetchedAt, true, nil
+}
+
+// ReplaceCoinMappings atomically replaces the complete CoinGecko catalog.
+func (s *Postgres) ReplaceCoinMappings(ctx context.Context, mappings []marketdata.CoinMapping) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.Background())
+
+	if _, err := tx.Exec(ctx, "TRUNCATE coingecko_coin_mappings"); err != nil {
+		return err
+	}
+	if _, err := tx.CopyFrom(ctx,
+		pgx.Identifier{"coingecko_coin_mappings"},
+		[]string{"id", "name", "symbol", "chain", "address", "fetched_at"},
+		pgx.CopyFromSlice(len(mappings), func(i int) ([]any, error) {
+			mapping := mappings[i]
+			return []any{mapping.ID, mapping.Name, mapping.Symbol, mapping.Chain, mapping.Address, mapping.FetchedAt}, nil
+		}),
+	); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// LoadCoinMappings returns the complete ordered CoinGecko catalog, if present.
+func (s *Postgres) LoadCoinMappings(ctx context.Context) ([]marketdata.CoinMapping, bool, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, symbol, chain, address, fetched_at
+		FROM coingecko_coin_mappings
+		ORDER BY id, chain, address`)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	var mappings []marketdata.CoinMapping
+	for rows.Next() {
+		var mapping marketdata.CoinMapping
+		if err := rows.Scan(&mapping.ID, &mapping.Name, &mapping.Symbol, &mapping.Chain, &mapping.Address, &mapping.FetchedAt); err != nil {
+			return nil, false, err
+		}
+		mappings = append(mappings, mapping)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	return mappings, len(mappings) > 0, nil
 }
 
 // GetTokenMeta returns the stored Moralis verdict/metadata for a contract, if

@@ -49,3 +49,16 @@ CREATE TABLE IF NOT EXISTS token_metadata (
     fetched_at    TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (chain, token_address)
 );
+
+CREATE TABLE IF NOT EXISTS coingecko_coin_mappings (
+    id         TEXT        NOT NULL,
+    name       TEXT        NOT NULL,
+    symbol     TEXT        NOT NULL,
+    chain      TEXT        NOT NULL,
+    address    TEXT        NOT NULL,
+    fetched_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (id, chain, address)
+);
+
+CREATE INDEX IF NOT EXISTS coingecko_coin_mappings_lookup_idx
+    ON coingecko_coin_mappings (chain, address);
