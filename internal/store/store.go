@@ -385,9 +385,17 @@ func (s *Postgres) SaveMarketData(ctx context.Context, records []marketdata.Reco
 	}
 
 	results := s.pool.SendBatch(ctx, &batch)
-	defer results.Close()
-	for range records {
-		if _, err := results.Exec(); err != nil {
+	return finishMarketBatch(results, len(records))
+}
+
+func finishMarketBatch(results pgx.BatchResults, count int) (err error) {
+	defer func() {
+		if closeErr := results.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+	for range count {
+		if _, err = results.Exec(); err != nil {
 			return err
 		}
 	}

@@ -177,3 +177,95 @@ func TestMarketDataOlderRedisWriteCannotReplaceOrExtendNewerRecord(t *testing.T)
 		t.Fatalf("older write extended TTL from %v to %v", before, after)
 	}
 }
+
+func TestDecodeMarketPayloadRejectsMalformedEnvelopes(t *testing.T) {
+	key := marketdata.ContractKey("ethereum", "0xA0B8")
+	valid := []byte(`{"chain":"ethereum","tokenKey":"0xa0b8","coingeckoID":"usd-coin","fetchedAt":"2023-11-14T22:13:20.123456789Z","fetchedAtUnixNano":"1700000000123456789"}`)
+
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "null", raw: `null`},
+		{name: "empty object", raw: `{}`},
+		{name: "array", raw: `[]`},
+		{name: "number", raw: `1`},
+		{name: "string", raw: `"market"`},
+		{name: "missing version", raw: `{"chain":"ethereum","tokenKey":"0xa0b8","coingeckoID":"usd-coin","fetchedAt":"2023-11-14T22:13:20.123456789Z"}`},
+		{name: "nonnumeric version", raw: `{"chain":"ethereum","tokenKey":"0xa0b8","coingeckoID":"usd-coin","fetchedAt":"2023-11-14T22:13:20.123456789Z","fetchedAtUnixNano":"not-a-number"}`},
+		{name: "wrong key", raw: `{"chain":"ethereum","tokenKey":"0xdead","coingeckoID":"usd-coin","fetchedAt":"2023-11-14T22:13:20.123456789Z","fetchedAtUnixNano":"1700000000123456789"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, ok := decodeMarketPayload([]byte(tt.raw), key); ok {
+				t.Fatalf("decodeMarketPayload accepted %s", tt.raw)
+			}
+		})
+	}
+	if got, ok := decodeMarketPayload(valid, key); !ok || got.Key != key || got.CoinGeckoID != "usd-coin" {
+		t.Fatalf("valid payload decode = %#v, ok=%v", got, ok)
+	}
+}
+
+func TestMarketDataPrecisionBoundaryDoesNotReplaceNewerRecord(t *testing.T) {
+	c := newTestCache(t)
+	ctx := context.Background()
+	key := marketdata.ContractKey("ethereum", "0xA0B8")
+	deleteMarketKeys(t, c, key)
+
+	newPrice := "2.00"
+	oldPrice := "1.00"
+	newer := marketdata.Record{
+		Key: key, CoinGeckoID: "newer", PriceUSD: &newPrice,
+		FetchedAt: time.Unix(1_700_000_000, 123456789).UTC(),
+	}
+	older := newer
+	older.CoinGeckoID = "older"
+	older.PriceUSD = &oldPrice
+	older.FetchedAt = time.Unix(1_700_000_000, 123456788).UTC()
+	if err := c.SaveMarketData(ctx, []marketdata.CacheWrite{{Record: newer, TTL: 10 * time.Minute}}); err != nil {
+		t.Fatalf("newer SaveMarketData: %v", err)
+	}
+	if err := c.SaveMarketData(ctx, []marketdata.CacheWrite{{Record: older, TTL: time.Hour}}); err != nil {
+		t.Fatalf("precision-boundary older SaveMarketData: %v", err)
+	}
+	got, err := c.LoadMarketData(ctx, []marketdata.Key{key})
+	if err != nil {
+		t.Fatalf("LoadMarketData: %v", err)
+	}
+	if got[key].CoinGeckoID != "newer" || got[key].PriceUSD == nil || *got[key].PriceUSD != newPrice {
+		t.Fatalf("one-nanosecond older write replaced newer record: %#v", got[key])
+	}
+}
+
+func TestMarketDataMalformedRedisEnvelopesAreMissesAndReplaceable(t *testing.T) {
+	c := newTestCache(t)
+	ctx := context.Background()
+	key := marketdata.ContractKey("ethereum", "0xA0B8")
+	deleteMarketKeys(t, c, key)
+
+	malformed := []string{
+		`null`, `{}`, `[]`, `1`, `"market"`,
+		`{"fetchedAtUnixNano":"not-a-number"}`,
+		`{"chain":"ethereum","tokenKey":"0xdead","coingeckoID":"future","fetchedAt":"2286-11-20T17:46:39.999999999Z","fetchedAtUnixNano":"9999999999999999999"}`,
+	}
+	for i, raw := range malformed {
+		if err := c.client.Set(ctx, marketKey(key), raw, time.Hour).Err(); err != nil {
+			t.Fatalf("seed malformed envelope %d: %v", i, err)
+		}
+		if got, err := c.LoadMarketData(ctx, []marketdata.Key{key}); err != nil {
+			t.Fatalf("LoadMarketData malformed envelope %d: %v", i, err)
+		} else if len(got) != 0 {
+			t.Fatalf("malformed envelope %d returned a record: %#v", i, got)
+		}
+		valid := marketdata.Record{Key: key, CoinGeckoID: "usd-coin", FetchedAt: time.Unix(2_000, 0).UTC()}
+		if err := c.SaveMarketData(ctx, []marketdata.CacheWrite{{Record: valid, TTL: 10 * time.Minute}}); err != nil {
+			t.Fatalf("replace malformed envelope %d: %v", i, err)
+		}
+		if got, err := c.LoadMarketData(ctx, []marketdata.Key{key}); err != nil {
+			t.Fatalf("LoadMarketData replaced envelope %d: %v", i, err)
+		} else if got[key].CoinGeckoID != "usd-coin" {
+			t.Fatalf("replacement %d = %#v", i, got[key])
+		}
+	}
+}

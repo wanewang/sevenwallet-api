@@ -2,11 +2,15 @@ package store
 
 import (
 	"context"
+	"errors"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"wallet-api/internal/lifi"
 	"wallet-api/internal/marketdata"
@@ -35,6 +39,54 @@ func newTestStore(t *testing.T) *Postgres {
 }
 
 func usdc(a string) *string { return &a }
+
+type fakeBatchResults struct {
+	execErr    error
+	closeErr   error
+	execCalls  int
+	closeCalls int
+}
+
+func (r *fakeBatchResults) Exec() (pgconn.CommandTag, error) {
+	r.execCalls++
+	return pgconn.CommandTag{}, r.execErr
+}
+
+func (r *fakeBatchResults) Query() (pgx.Rows, error) { panic("unused") }
+
+func (r *fakeBatchResults) QueryRow() pgx.Row { panic("unused") }
+
+func (r *fakeBatchResults) Close() error {
+	r.closeCalls++
+	return r.closeErr
+}
+
+func TestFinishMarketBatchReturnsCloseError(t *testing.T) {
+	closeErr := errors.New("batch close failed")
+	results := &fakeBatchResults{closeErr: closeErr}
+	if err := finishMarketBatch(results, 1); !errors.Is(err, closeErr) {
+		t.Fatalf("finishMarketBatch error = %v, want %v", err, closeErr)
+	}
+	if results.execCalls != 1 || results.closeCalls != 1 {
+		t.Fatalf("batch calls = exec %d close %d, want 1/1", results.execCalls, results.closeCalls)
+	}
+}
+
+func TestFinishMarketBatchPreservesFirstExecError(t *testing.T) {
+	execErr := errors.New("batch exec failed")
+	closeErr := errors.New("batch close failed")
+	results := &fakeBatchResults{execErr: execErr, closeErr: closeErr}
+	err := finishMarketBatch(results, 2)
+	if !errors.Is(err, execErr) {
+		t.Fatalf("finishMarketBatch error = %v, want first exec error %v", err, execErr)
+	}
+	if errors.Is(err, closeErr) {
+		t.Fatalf("finishMarketBatch returned close error instead of first exec error: %v", err)
+	}
+	if results.execCalls != 1 || results.closeCalls != 1 {
+		t.Fatalf("batch calls = exec %d close %d, want 1/1", results.execCalls, results.closeCalls)
+	}
+}
 
 func TestSaveAndGetFreshTokens(t *testing.T) {
 	s := newTestStore(t)

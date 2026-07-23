@@ -1,6 +1,7 @@
 package marketdata
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -22,5 +23,15 @@ func TestKeysNormalizeDefinedParts(t *testing.T) {
 	}
 	if got := NativeKey("Ethereum", "eth"); got != (Key{Chain: "ethereum", TokenKey: "native:ETH"}) {
 		t.Fatalf("native key = %#v", got)
+	}
+}
+
+func TestRecordJSONUsesLowercaseKeyFields(t *testing.T) {
+	b, err := json.Marshal(Record{Key: Key{Chain: "ethereum", TokenKey: "0xa0b8"}})
+	if err != nil {
+		t.Fatalf("marshal record: %v", err)
+	}
+	if got := string(b); got != `{"chain":"ethereum","tokenKey":"0xa0b8","coingeckoID":"","priceUSD":null,"change24hPercent":null,"marketCapUSD":null,"marketDataUpdatedAt":null,"fetchedAt":"0001-01-01T00:00:00Z"}` {
+		t.Fatalf("record JSON = %s", got)
 	}
 }

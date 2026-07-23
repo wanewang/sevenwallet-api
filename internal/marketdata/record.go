@@ -7,8 +7,8 @@ import (
 
 // Key identifies a token's market record independently of any wallet.
 type Key struct {
-	Chain    string
-	TokenKey string
+	Chain    string `json:"chain"`
+	TokenKey string `json:"tokenKey"`
 }
 
 // ContractKey normalizes a chain and platform contract address into a key.

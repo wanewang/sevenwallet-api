@@ -47,15 +47,98 @@ type payload struct {
 
 type marketPayload struct {
 	marketdata.Record
-	FetchedAtUnixNano int64 `json:"fetchedAtUnixNano"`
+	FetchedAtUnixNano string `json:"fetchedAtUnixNano"`
 }
 
 const marketCASLua = `
+local function decimalParts(value)
+  if type(value) ~= 'string' then
+    return nil
+  end
+  local start = 1
+  local negative = false
+  if string.sub(value, 1, 1) == '-' then
+    negative = true
+    start = 2
+  end
+  if start > string.len(value) then
+    return nil
+  end
+  for i = start, string.len(value) do
+    local digit = string.byte(value, i)
+    if digit < 48 or digit > 57 then
+      return nil
+    end
+  end
+  local digits = string.sub(value, start)
+  digits = string.gsub(digits, '^0+', '')
+  if digits == '' then
+    return false, '0'
+  end
+  return negative, digits
+end
+
+local function compareDecimals(left, right)
+  local leftNegative, leftDigits = decimalParts(left)
+  local rightNegative, rightDigits = decimalParts(right)
+  if leftDigits == nil or rightDigits == nil then
+    return nil
+  end
+  if leftNegative ~= rightNegative then
+    if leftNegative then
+      return -1
+    end
+    return 1
+  end
+  if string.len(leftDigits) ~= string.len(rightDigits) then
+    if leftNegative then
+      if string.len(leftDigits) < string.len(rightDigits) then
+        return 1
+      end
+      return -1
+    end
+    if string.len(leftDigits) < string.len(rightDigits) then
+      return -1
+    end
+    return 1
+  end
+  if leftDigits == rightDigits then
+    return 0
+  end
+  if leftNegative then
+    if leftDigits < rightDigits then
+      return 1
+    end
+    return -1
+  end
+  if leftDigits < rightDigits then
+    return -1
+  end
+  return 1
+end
+
+local function validEnvelope(decoded, expectedChain, expectedToken)
+  if type(decoded) ~= 'table' then
+    return false
+  end
+  if decoded['chain'] ~= expectedChain or decoded['tokenKey'] ~= expectedToken then
+    return false
+  end
+  local required = {'chain', 'tokenKey', 'coingeckoID', 'fetchedAt', 'fetchedAtUnixNano'}
+  for _, field in ipairs(required) do
+    if type(decoded[field]) ~= 'string' or decoded[field] == '' then
+      return false
+    end
+  end
+  local _, digits = decimalParts(decoded['fetchedAtUnixNano'])
+  return digits ~= nil
+end
+
 local current = redis.call('GET', KEYS[1])
 if current then
   local ok, decoded = pcall(cjson.decode, current)
-  if ok and decoded['fetchedAtUnixNano'] ~= nil then
-    if tonumber(ARGV[2]) < tonumber(decoded['fetchedAtUnixNano']) then
+  if ok and validEnvelope(decoded, ARGV[4], ARGV[5]) then
+    if compareDecimals(ARGV[2], decoded['fetchedAtUnixNano']) == -1 then
       return 0
     end
   end
@@ -153,13 +236,12 @@ func (c *Cache) LoadMarketData(ctx context.Context, keys []marketdata.Key) (map[
 			continue
 		}
 
-		var payload marketPayload
-		if err := json.Unmarshal(raw, &payload); err != nil {
-			log.Printf("rediscache: malformed CoinGecko market data key %q: %v", redisKeys[i], err)
+		record, ok := decodeMarketPayload(raw, keys[i])
+		if !ok {
+			log.Printf("rediscache: malformed CoinGecko market data key %q: invalid envelope", redisKeys[i])
 			continue
 		}
-		payload.Record.Key = keys[i]
-		result[keys[i]] = payload.Record
+		result[keys[i]] = record
 	}
 	return result, nil
 }
@@ -175,7 +257,7 @@ func (c *Cache) SaveMarketData(ctx context.Context, writes []marketdata.CacheWri
 		}
 		payload, err := json.Marshal(marketPayload{
 			Record:            write.Record,
-			FetchedAtUnixNano: write.Record.FetchedAt.UnixNano(),
+			FetchedAtUnixNano: strconv.FormatInt(write.Record.FetchedAt.UnixNano(), 10),
 		})
 		if err != nil {
 			return err
@@ -185,7 +267,8 @@ func (c *Cache) SaveMarketData(ctx context.Context, writes []marketdata.CacheWri
 			ttlMilliseconds = 1
 		}
 		pipe.Eval(ctx, marketCASLua, []string{marketKey(write.Record.Key)},
-			string(payload), strconv.FormatInt(write.Record.FetchedAt.UnixNano(), 10), strconv.FormatInt(ttlMilliseconds, 10))
+			string(payload), strconv.FormatInt(write.Record.FetchedAt.UnixNano(), 10), strconv.FormatInt(ttlMilliseconds, 10),
+			write.Record.Key.Chain, write.Record.Key.TokenKey)
 		queued++
 	}
 	if queued == 0 {
@@ -193,4 +276,21 @@ func (c *Cache) SaveMarketData(ctx context.Context, writes []marketdata.CacheWri
 	}
 	_, err := pipe.Exec(ctx)
 	return err
+}
+
+func decodeMarketPayload(raw []byte, key marketdata.Key) (marketdata.Record, bool) {
+	var payload marketPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return marketdata.Record{}, false
+	}
+	if payload.Record.Chain != key.Chain || payload.Record.TokenKey != key.TokenKey ||
+		payload.Record.CoinGeckoID == "" || payload.Record.FetchedAt.IsZero() {
+		return marketdata.Record{}, false
+	}
+	fetchedAtUnixNano, err := strconv.ParseInt(payload.FetchedAtUnixNano, 10, 64)
+	if err != nil || strconv.FormatInt(fetchedAtUnixNano, 10) != payload.FetchedAtUnixNano ||
+		fetchedAtUnixNano != payload.Record.FetchedAt.UnixNano() {
+		return marketdata.Record{}, false
+	}
+	return payload.Record, true
 }
