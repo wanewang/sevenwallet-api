@@ -1,9 +1,96 @@
 package config
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
+
+func coinGeckoTestEnv() map[string]string {
+	return map[string]string{
+		"ALCHEMY_API_KEY": "key123",
+		"DATABASE_URL":    "postgres://db",
+		"REDIS_URL":       "redis://localhost:6379/0",
+		"MORALIS_API_KEY": "mkey",
+	}
+}
+
+func TestLoadFromAppliesCoinGeckoDefaults(t *testing.T) {
+	env := coinGeckoTestEnv()
+	cfg, err := loadFrom(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatalf("loadFrom: %v", err)
+	}
+	if cfg.CoinGeckoBaseURL != "https://api.coingecko.com/api/v3" {
+		t.Errorf("base URL = %q", cfg.CoinGeckoBaseURL)
+	}
+	if cfg.CoinGeckoUserAgent != "wallet-api/1.0" || cfg.CoinGeckoPlatform != "ethereum" {
+		t.Errorf("identity defaults = %+v", cfg)
+	}
+	if cfg.CoinGeckoListRefresh != 6*time.Hour || cfg.CoinGeckoMarketTTL != 30*time.Minute {
+		t.Errorf("duration defaults = %+v", cfg)
+	}
+	if cfg.CoinGeckoEnrichTimeout != 5*time.Second {
+		t.Errorf("enrichment timeout = %v", cfg.CoinGeckoEnrichTimeout)
+	}
+	if !reflect.DeepEqual(cfg.CoinGeckoNativeIDs, []string{"ethereum"}) {
+		t.Errorf("native IDs = %#v", cfg.CoinGeckoNativeIDs)
+	}
+}
+
+func TestLoadFromHonoursCoinGeckoOverrides(t *testing.T) {
+	env := coinGeckoTestEnv()
+	env["COINGECKO_BASE_URL"] = "http://coingecko.test/api/v3"
+	env["COINGECKO_USER_AGENT"] = "wallet-api-test/2.0"
+	env["COINGECKO_PLATFORM"] = "base"
+	env["COINGECKO_LIST_REFRESH_SECONDS"] = "60"
+	env["COINGECKO_MARKET_TTL_SECONDS"] = "90"
+	env["COINGECKO_ENRICH_TIMEOUT_SECONDS"] = "7"
+	env["COINGECKO_NATIVE_IDS"] = " ethereum,wrapped-ether,ethereum "
+	cfg, err := loadFrom(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatalf("loadFrom: %v", err)
+	}
+	if cfg.CoinGeckoBaseURL != "http://coingecko.test/api/v3" || cfg.CoinGeckoPlatform != "base" {
+		t.Errorf("string overrides = %+v", cfg)
+	}
+	if cfg.CoinGeckoListRefresh != time.Minute || cfg.CoinGeckoMarketTTL != 90*time.Second || cfg.CoinGeckoEnrichTimeout != 7*time.Second {
+		t.Errorf("duration overrides = %+v", cfg)
+	}
+	if !reflect.DeepEqual(cfg.CoinGeckoNativeIDs, []string{"ethereum", "wrapped-ether"}) {
+		t.Errorf("native IDs = %#v", cfg.CoinGeckoNativeIDs)
+	}
+}
+
+func TestLoadFromRejectsInvalidCoinGeckoDurations(t *testing.T) {
+	keys := []string{
+		"COINGECKO_LIST_REFRESH_SECONDS",
+		"COINGECKO_MARKET_TTL_SECONDS",
+		"COINGECKO_ENRICH_TIMEOUT_SECONDS",
+	}
+	for _, key := range keys {
+		for _, raw := range []string{"0", "-1", "abc"} {
+			t.Run(key+"="+raw, func(t *testing.T) {
+				env := coinGeckoTestEnv()
+				env[key] = raw
+				if _, err := loadFrom(func(k string) string { return env[k] }); err == nil {
+					t.Fatalf("expected error for %s=%q", key, raw)
+				} else if !strings.Contains(err.Error(), key) {
+					t.Fatalf("error = %q, want error naming %s", err, key)
+				}
+			})
+		}
+	}
+}
+
+func TestLoadFromRejectsEmptyCoinGeckoNativeIDs(t *testing.T) {
+	env := coinGeckoTestEnv()
+	env["COINGECKO_NATIVE_IDS"] = " , "
+	if _, err := loadFrom(func(k string) string { return env[k] }); err == nil {
+		t.Fatal("expected error for empty COINGECKO_NATIVE_IDS")
+	}
+}
 
 func TestLoadFromAppliesDefaults(t *testing.T) {
 	env := map[string]string{
