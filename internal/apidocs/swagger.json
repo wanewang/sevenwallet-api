@@ -196,7 +196,8 @@
                     "x-nullable": true
                 },
                 "coinKey": {
-                    "type": "string"
+                    "type": "string",
+                    "x-nullable": true
                 },
                 "decimals": {
                     "type": "integer"

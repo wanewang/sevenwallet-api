@@ -34,7 +34,7 @@ type Token struct {
 	IsNative            bool     `json:"isNative"`
 	Price               *Price   `json:"price"`
 	LogoURI             *string  `json:"logoURI,omitempty"`
-	CoinKey             *string  `json:"coinKey,omitempty"`
+	CoinKey             *string  `json:"coinKey,omitempty" extensions:"x-nullable"`
 	PriceUSD            *string  `json:"priceUSD,omitempty"`
 	Change24HPercent    *float64 `json:"change24hPercent" extensions:"x-nullable"`
 	MarketCapUSD        *float64 `json:"marketCapUSD" extensions:"x-nullable"`
