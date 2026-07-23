@@ -3,6 +3,7 @@ package marketdata
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"sort"
 	"strings"
@@ -289,10 +290,14 @@ func newerStaleRecord(current, candidate Record) Record {
 func (s *Service) recordFromPrice(key Key, id string, price coingecko.SimplePrice, fetchedAt time.Time) Record {
 	record := Record{Key: key, CoinGeckoID: id, FetchedAt: fetchedAt}
 	if price.USD != nil {
-		if _, err := price.USD.Float64(); err != nil {
+		var parsed json.Number
+		if err := json.Unmarshal([]byte(price.USD.String()), &parsed); err != nil || parsed.String() != price.USD.String() {
+			if err == nil {
+				err = errors.New("invalid JSON number")
+			}
 			s.logf("marketdata: invalid USD price for %q: %v", id, err)
 		} else {
-			value := string(*price.USD)
+			value := price.USD.String()
 			record.PriceUSD = &value
 		}
 	}

@@ -252,6 +252,39 @@ func TestEnrichFetchedPriceOverwritesOriginalImmediately(t *testing.T) {
 	}
 }
 
+func TestEnrichOutOfFloatRangeUSDIsPreservedExactly(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	smallUSD := json.Number("1e-400")
+	largeUSD := json.Number("1e400")
+	client := &fakePriceClient{responses: []map[string]coingecko.SimplePrice{{
+		"small": {USD: &smallUSD},
+		"large": {USD: &largeUSD},
+	}}}
+	service := newServiceForTest(t, &fakeMarketCache{loads: []map[Key]Record{{}}}, &fakeMarketStore{loads: []map[Key]Record{{}}}, client, []CoinMapping{
+		contractMapping("small", "0xA0B8"),
+		contractMapping("large", "0xB0B8"),
+	}, nil, now)
+	tokens := []wallet.Token{contractToken("0xA0B8", "SMALL"), contractToken("0xB0B8", "LARGE")}
+
+	got := service.EnrichTokens(context.Background(), tokens)
+
+	want := []string{"1e-400", "1e400"}
+	for i, value := range want {
+		if got[i].PriceUSD == nil || *got[i].PriceUSD != value || got[i].Price == nil || got[i].Price.Value != value {
+			t.Fatalf("token %d USD = %#v, want exact %q", i, got[i], value)
+		}
+	}
+	if len(service.store.(*fakeMarketStore).saves) != 1 || len(service.store.(*fakeMarketStore).saves[0]) != 2 {
+		t.Fatalf("persisted records = %#v, want both fetched prices", service.store.(*fakeMarketStore).saves)
+	}
+	wantByID := map[string]string{"small": want[0], "large": want[1]}
+	for _, persisted := range service.store.(*fakeMarketStore).saves[0] {
+		if persisted.PriceUSD == nil || *persisted.PriceUSD != wantByID[persisted.CoinGeckoID] {
+			t.Fatalf("persisted record %q USD = %#v, want exact %q", persisted.CoinGeckoID, persisted.PriceUSD, wantByID[persisted.CoinGeckoID])
+		}
+	}
+}
+
 func TestEnrichFreshRecordWithoutUSDDoesNotEraseOriginalPrice(t *testing.T) {
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 	key := ContractKey("ethereum", "0xA0B8")
