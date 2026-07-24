@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -22,6 +23,14 @@ type Config struct {
 	MoralisChain    string
 	MoralisRecheck  time.Duration
 	MoralisRedisTTL time.Duration
+
+	CoinGeckoBaseURL       string
+	CoinGeckoUserAgent     string
+	CoinGeckoPlatform      string
+	CoinGeckoListRefresh   time.Duration
+	CoinGeckoMarketTTL     time.Duration
+	CoinGeckoEnrichTimeout time.Duration
+	CoinGeckoNativeIDs     []string
 }
 
 // Load reads configuration from the process environment.
@@ -105,5 +114,67 @@ func loadFrom(getenv func(string) string) (Config, error) {
 		redisTTL = n
 	}
 	cfg.MoralisRedisTTL = time.Duration(redisTTL) * time.Second
+	cfg.CoinGeckoBaseURL = getenv("COINGECKO_BASE_URL")
+	if cfg.CoinGeckoBaseURL == "" {
+		cfg.CoinGeckoBaseURL = "https://api.coingecko.com/api/v3"
+	}
+	cfg.CoinGeckoUserAgent = getenv("COINGECKO_USER_AGENT")
+	if cfg.CoinGeckoUserAgent == "" {
+		cfg.CoinGeckoUserAgent = "wallet-api/1.0"
+	}
+	cfg.CoinGeckoPlatform = getenv("COINGECKO_PLATFORM")
+	if cfg.CoinGeckoPlatform == "" {
+		cfg.CoinGeckoPlatform = "ethereum"
+	}
+	var err error
+	cfg.CoinGeckoListRefresh, err = positiveSeconds(getenv, "COINGECKO_LIST_REFRESH_SECONDS", 21600)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.CoinGeckoMarketTTL, err = positiveSeconds(getenv, "COINGECKO_MARKET_TTL_SECONDS", 1800)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.CoinGeckoEnrichTimeout, err = positiveSeconds(getenv, "COINGECKO_ENRICH_TIMEOUT_SECONDS", 5)
+	if err != nil {
+		return Config{}, err
+	}
+	nativeIDs := getenv("COINGECKO_NATIVE_IDS")
+	if nativeIDs == "" {
+		nativeIDs = "ethereum"
+	}
+	cfg.CoinGeckoNativeIDs = uniqueCSV(nativeIDs)
+	if len(cfg.CoinGeckoNativeIDs) == 0 {
+		return Config{}, fmt.Errorf("COINGECKO_NATIVE_IDS must contain at least one ID")
+	}
 	return cfg, nil
+}
+
+func positiveSeconds(getenv func(string) string, key string, fallback int) (time.Duration, error) {
+	raw := getenv(key)
+	if raw == "" {
+		return time.Duration(fallback) * time.Second, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer, got %q", key, raw)
+	}
+	return time.Duration(n) * time.Second, nil
+}
+
+func uniqueCSV(raw string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	for _, part := range strings.Split(raw, ",") {
+		id := strings.TrimSpace(part)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }

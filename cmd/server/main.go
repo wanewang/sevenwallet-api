@@ -8,8 +8,10 @@ import (
 
 	"wallet-api/internal/alchemy"
 	"wallet-api/internal/api"
+	"wallet-api/internal/coingecko"
 	"wallet-api/internal/config"
 	"wallet-api/internal/lifi"
+	"wallet-api/internal/marketdata"
 	"wallet-api/internal/moralis"
 	"wallet-api/internal/rediscache"
 	"wallet-api/internal/store"
@@ -62,10 +64,22 @@ func main() {
 	go refresher.Run(context.Background())
 	log.Printf("token list ready: %d tokens (chain=%s, refresh=%s)", holder.Current().Count(), cfg.LifiChain, cfg.LifiRefresh)
 
+	coinGeckoClient := coingecko.New(cfg.CoinGeckoBaseURL, cfg.CoinGeckoUserAgent)
+	coinCatalog := &marketdata.Holder{}
+	coinRefresher := marketdata.NewRefresher(coinGeckoClient, pg, coinCatalog, cfg.CoinGeckoListRefresh)
+	coinRefresher.Bootstrap(setupCtx)
+	go coinRefresher.Run(context.Background())
+	log.Printf("marketdata catalog ready: %d mappings (platform=%s, refresh=%s)", coinCatalog.Count(), cfg.CoinGeckoPlatform, cfg.CoinGeckoListRefresh)
+
 	ac := alchemy.New(cfg.AlchemyAPIKey, cfg.AlchemyNetwork)
 	moralisClient := moralis.New(cfg.MoralisAPIKey, cfg.MoralisChain)
 	validator := tokenvalidity.NewChecker(moralisClient, redisCache, pg, cfg.MoralisChain, cfg.MoralisRecheck, cfg.MoralisRedisTTL)
-	svc := wallet.NewService(ac, pg, pg, holder, validator, cfg.AlchemyNetwork, cfg.CacheTTL)
+	coinMarket := marketdata.NewService(
+		coinGeckoClient, redisCache, pg, coinCatalog,
+		cfg.CoinGeckoPlatform, cfg.CoinGeckoNativeIDs,
+		cfg.CoinGeckoMarketTTL, cfg.CoinGeckoEnrichTimeout,
+	)
+	svc := wallet.NewService(ac, pg, pg, holder, validator, coinMarket, cfg.AlchemyNetwork, cfg.CacheTTL)
 	router := api.NewRouter(svc)
 
 	srv := &http.Server{

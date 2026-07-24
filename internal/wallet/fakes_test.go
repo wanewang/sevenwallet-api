@@ -112,3 +112,18 @@ func (f *fakeValidator) Validate(ctx context.Context, address string) (Validatio
 
 // denyValidator drops every unlisted token (preserves pre-Moralis behavior).
 func denyValidator() *fakeValidator { return &fakeValidator{result: Validation{Valid: false}} }
+
+type fakeMarketEnricher struct {
+	calls int
+	seen  []Token
+	out   []Token
+}
+
+func (f *fakeMarketEnricher) EnrichTokens(_ context.Context, tokens []Token) []Token {
+	f.calls++
+	f.seen = append([]Token(nil), tokens...)
+	if f.out != nil {
+		return append([]Token(nil), f.out...)
+	}
+	return tokens
+}

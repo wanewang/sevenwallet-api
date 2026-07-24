@@ -49,3 +49,43 @@ CREATE TABLE IF NOT EXISTS token_metadata (
     fetched_at    TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (chain, token_address)
 );
+
+CREATE TABLE IF NOT EXISTS coingecko_coin_mappings (
+    id         TEXT        NOT NULL,
+    name       TEXT        NOT NULL,
+    symbol     TEXT        NOT NULL,
+    chain      TEXT        NOT NULL,
+    address    TEXT        NOT NULL,
+    fetched_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (id, chain, address)
+);
+
+CREATE INDEX IF NOT EXISTS coingecko_coin_mappings_lookup_idx
+    ON coingecko_coin_mappings (chain, address);
+
+CREATE TABLE IF NOT EXISTS coingecko_market_data (
+    chain                TEXT        NOT NULL,
+    token_key            TEXT        NOT NULL,
+    coingecko_id         TEXT        NOT NULL,
+    price_usd            TEXT,
+    change_24h_percent   NUMERIC,
+    market_cap_usd       NUMERIC,
+    market_updated_at    TIMESTAMPTZ,
+    fetched_at           TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (chain, token_key)
+);
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'coingecko_market_data'
+          AND column_name = 'price_usd'
+          AND data_type = 'numeric'
+    ) THEN
+        ALTER TABLE coingecko_market_data
+            ALTER COLUMN price_usd TYPE TEXT USING price_usd::text;
+    END IF;
+END $$;

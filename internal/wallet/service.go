@@ -17,14 +17,15 @@ type Service struct {
 	txs       TxCache
 	allow     Allowlist
 	validator Validator
+	market    MarketEnricher
 	network   string
 	ttl       time.Duration
 	now       func() time.Time
 }
 
 // NewService builds a Service with a real-time clock.
-func NewService(a AlchemyClient, ts TokenStore, tc TxCache, allow Allowlist, validator Validator, network string, ttl time.Duration) *Service {
-	return &Service{alchemy: a, tokens: ts, txs: tc, allow: allow, validator: validator, network: network, ttl: ttl, now: time.Now}
+func NewService(a AlchemyClient, ts TokenStore, tc TxCache, allow Allowlist, validator Validator, market MarketEnricher, network string, ttl time.Duration) *Service {
+	return &Service{alchemy: a, tokens: ts, txs: tc, allow: allow, validator: validator, market: market, network: network, ttl: ttl, now: time.Now}
 }
 
 // GetTokens returns the address's token portfolio, served from the DB snapshot
@@ -34,7 +35,7 @@ func (s *Service) GetTokens(ctx context.Context, address string) (*TokenPortfoli
 	if p, ok, err := s.tokens.GetFreshTokens(ctx, addr, s.network, s.ttl); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrStore, err)
 	} else if ok {
-		return s.filterTokens(ctx, p), nil
+		return s.finishTokens(ctx, p), nil
 	}
 	raw, err := s.alchemy.GetTokens(ctx, addr, s.network)
 	if err != nil {
@@ -53,11 +54,11 @@ func (s *Service) GetTokens(ctx context.Context, address string) (*TokenPortfoli
 	if err := s.tokens.SaveTokens(ctx, p); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrStore, err)
 	}
-	return s.filterTokens(ctx, p), nil
+	return s.finishTokens(ctx, p), nil
 }
 
 // GetNativeTokens returns native ETH metadata and price from the current LI.FI snapshot.
-func (s *Service) GetNativeTokens(_ context.Context) ([]Token, error) {
+func (s *Service) GetNativeTokens(ctx context.Context) ([]Token, error) {
 	lt, fetchedAt, ok := s.allow.LookupNative()
 	priceUSD := strings.TrimSpace(lt.PriceUSD)
 	if !ok || priceUSD == "" || fetchedAt.IsZero() {
@@ -84,6 +85,9 @@ func (s *Service) GetNativeTokens(_ context.Context) ([]Token, error) {
 	}
 	if lt.CoinKey != "" {
 		t.CoinKey = strptr(lt.CoinKey)
+	}
+	if s.market != nil {
+		return s.market.EnrichTokens(ctx, []Token{t}), nil
 	}
 	return []Token{t}, nil
 }
@@ -164,6 +168,9 @@ func (s *Service) filterTokens(ctx context.Context, p *TokenPortfolio) *TokenPor
 	out.Tokens = make([]Token, 0, len(p.Tokens))
 	for _, t := range p.Tokens {
 		if t.IsNative || t.TokenAddress == nil {
+			if lt, _, ok := s.allow.LookupNative(); ok {
+				t = enrichToken(t, lt)
+			}
 			out.Tokens = append(out.Tokens, t)
 			continue
 		}
@@ -176,6 +183,14 @@ func (s *Service) filterTokens(ctx context.Context, p *TokenPortfolio) *TokenPor
 			continue // fail-closed: invalid or unknown tokens are dropped
 		}
 		out.Tokens = append(out.Tokens, enrichFromValidation(t, v))
+	}
+	return out
+}
+
+func (s *Service) finishTokens(ctx context.Context, p *TokenPortfolio) *TokenPortfolio {
+	out := s.filterTokens(ctx, p)
+	if s.market != nil {
+		out.Tokens = s.market.EnrichTokens(ctx, out.Tokens)
 	}
 	return out
 }
