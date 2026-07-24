@@ -49,6 +49,7 @@ Set via environment variables:
 | `ALCHEMY_NETWORK` | no | `eth-mainnet` | Target network |
 | `CACHE_TTL_SECONDS` | no | `300` | Cache TTL (positive integer) |
 | `PORT` | no | `8080` | HTTP listen port |
+| `PROVIDER_API_LOGGING` | no | `false` | Set exactly to `true` to enable local Alchemy, Moralis, and CoinGecko diagnostics; ignored on Cloud Run when `K_SERVICE` is present |
 | `REDIS_URL` | yes | — | Redis connection string, e.g. `redis://localhost:6379/0` |
 | `LIFI_TOKENS_URL` | no | `https://li.quest/v1/tokens` | LI.FI token-list endpoint |
 | `LIFI_CHAIN` | no | `ETH` | LI.FI chain key for the allowlist |
@@ -60,6 +61,8 @@ Set via environment variables:
 
 Responses are filtered to the LI.FI token allowlist: tokens on the allowlist are enriched with `logoURI`, `coinKey`, and `priceUSD`. Unlisted ERC-20s are no longer simply hidden — they are checked against the Moralis API and kept (enriched with Moralis metadata) only if they are not flagged as `possible_spam` and are a `verified_contract`; otherwise they are dropped. The allowlist is fetched at startup and refreshed hourly.
 
+Provider API diagnostics are off by default. For local troubleshooting, set `PROVIDER_API_LOGGING=true` to log Alchemy and Moralis request attempts and decoded results, plus CoinGecko price attempts and results. CoinGecko's `/coins/list` operation logs only its sanitized request URL, never the catalog response or outcome details. The feature does not add LI.FI request or response logging. Cloud Run always suppresses these diagnostics because its `K_SERVICE` variable is present, even if the opt-in is set. Local diagnostic results can contain wallet addresses and provider data; API credentials and credential-bearing URLs are redacted.
+
 ## Run locally
 
 ```sh
@@ -67,6 +70,7 @@ docker compose up -d            # start Postgres (5433) + Redis (6379)
 export ALCHEMY_API_KEY=...      # your key
 export DATABASE_URL=postgres://wallet:wallet@localhost:5433/wallet
 export REDIS_URL=redis://localhost:6379/0
+export PROVIDER_API_LOGGING=true # optional local provider diagnostics
 go run ./cmd/server             # migrates schema, then listens on :8080
 ```
 

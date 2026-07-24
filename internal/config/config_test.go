@@ -112,6 +112,9 @@ func TestLoadFromAppliesDefaults(t *testing.T) {
 	if cfg.Port != "8080" {
 		t.Errorf("port = %q, want 8080", cfg.Port)
 	}
+	if cfg.ProviderAPILogging {
+		t.Error("provider API logging enabled without explicit opt-in")
+	}
 	if cfg.LifiTokensURL != "https://li.quest/v1/tokens" {
 		t.Errorf("lifi url = %q, want default", cfg.LifiTokensURL)
 	}
@@ -132,6 +135,36 @@ func TestLoadFromAppliesDefaults(t *testing.T) {
 	}
 	if cfg.MoralisRedisTTL != 86400*time.Second {
 		t.Errorf("moralis redis ttl = %v, want 86400s", cfg.MoralisRedisTTL)
+	}
+}
+
+func TestLoadFromProviderAPILoggingRequiresExplicitLocalOptIn(t *testing.T) {
+	tests := []struct {
+		name    string
+		optIn   string
+		service string
+		enabled bool
+	}{
+		{name: "explicit local opt-in", optIn: "true", enabled: true},
+		{name: "default off"},
+		{name: "false", optIn: "false"},
+		{name: "uppercase is not explicit", optIn: "TRUE"},
+		{name: "numeric is not explicit", optIn: "1"},
+		{name: "Cloud Run overrides opt-in", optIn: "true", service: "wallet-api"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := coinGeckoTestEnv()
+			env["PROVIDER_API_LOGGING"] = tt.optIn
+			env["K_SERVICE"] = tt.service
+			cfg, err := loadFrom(func(k string) string { return env[k] })
+			if err != nil {
+				t.Fatalf("loadFrom: %v", err)
+			}
+			if cfg.ProviderAPILogging != tt.enabled {
+				t.Fatalf("ProviderAPILogging = %t, want %t", cfg.ProviderAPILogging, tt.enabled)
+			}
+		})
 	}
 }
 
