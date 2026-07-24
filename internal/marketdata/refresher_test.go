@@ -14,10 +14,14 @@ type fakeCoinListClient struct {
 	err    error
 	calls  int
 	called chan struct{}
+	cancel context.CancelFunc
 }
 
 func (f *fakeCoinListClient) ListCoins(context.Context) ([]coingecko.Coin, error) {
 	f.calls++
+	if f.cancel != nil {
+		f.cancel()
+	}
 	if f.called != nil {
 		select {
 		case f.called <- struct{}{}:
@@ -34,6 +38,8 @@ type fakeCatalogStore struct {
 	loadErr      error
 	replaceCalls int
 	replaced     chan struct{}
+	loadCtxErr   error
+	loadDeadline bool
 }
 
 func (s *fakeCatalogStore) ReplaceCoinMappings(_ context.Context, mappings []CoinMapping) error {
@@ -52,7 +58,9 @@ func (s *fakeCatalogStore) ReplaceCoinMappings(_ context.Context, mappings []Coi
 	return nil
 }
 
-func (s *fakeCatalogStore) LoadCoinMappings(context.Context) ([]CoinMapping, bool, error) {
+func (s *fakeCatalogStore) LoadCoinMappings(ctx context.Context) ([]CoinMapping, bool, error) {
+	s.loadCtxErr = ctx.Err()
+	_, s.loadDeadline = ctx.Deadline()
 	if s.loadErr != nil {
 		return nil, false, s.loadErr
 	}
@@ -134,6 +142,25 @@ func TestBootstrapFetchFailureFallsBackToPostgres(t *testing.T) {
 
 	if got := holder.Current(); got == nil || got.Count() != len(refresherMappings) {
 		t.Fatalf("postgres fallback was not installed: %#v", got)
+	}
+}
+
+func TestBootstrapExpiredFetchContextStillFallsBackToPostgres(t *testing.T) {
+	store := &fakeCatalogStore{mappings: refresherMappings, present: true}
+	var holder Holder
+	ctx, cancel := context.WithCancel(context.Background())
+	r := newTestRefresher(&fakeCoinListClient{err: context.Canceled, cancel: cancel}, store, &holder)
+
+	r.Bootstrap(ctx)
+
+	if got := holder.Current(); got == nil || got.Count() != len(refresherMappings) {
+		t.Fatalf("postgres fallback was not installed after fetch cancellation: %#v", got)
+	}
+	if store.loadCtxErr != nil {
+		t.Fatalf("postgres fallback received canceled context: %v", store.loadCtxErr)
+	}
+	if !store.loadDeadline {
+		t.Fatal("postgres fallback context has no bounded deadline")
 	}
 }
 

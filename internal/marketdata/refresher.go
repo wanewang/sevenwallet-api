@@ -9,6 +9,8 @@ import (
 	"wallet-api/internal/coingecko"
 )
 
+const bootstrapFallbackTimeout = 5 * time.Second
+
 type CoinListClient interface {
 	ListCoins(context.Context) ([]coingecko.Coin, error)
 }
@@ -34,6 +36,9 @@ func NewRefresher(client CoinListClient, store CatalogStore, holder *Holder, int
 // Bootstrap installs a fresh catalog when possible and otherwise falls back to
 // the last non-empty PostgreSQL snapshot without failing startup.
 func (r *Refresher) Bootstrap(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	mappings, err := r.fetch(ctx)
 	if err == nil {
 		if err := r.store.ReplaceCoinMappings(ctx, mappings); err == nil {
@@ -47,7 +52,11 @@ func (r *Refresher) Bootstrap(ctx context.Context) {
 		r.logf("marketdata: bootstrap fetch/build failed: %v", err)
 	}
 
-	if mappings, ok, err := r.store.LoadCoinMappings(ctx); err != nil {
+	// The fetch may have exhausted the caller's startup deadline. Give the
+	// durable fallback its own bounded attempt while retaining context values.
+	fallbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bootstrapFallbackTimeout)
+	defer cancel()
+	if mappings, ok, err := r.store.LoadCoinMappings(fallbackCtx); err != nil {
 		r.logf("marketdata: bootstrap postgres load failed: %v", err)
 	} else if ok && len(mappings) > 0 {
 		r.holder.Set(NewCatalog(mappings))

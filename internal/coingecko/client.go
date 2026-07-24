@@ -15,6 +15,7 @@ import (
 const (
 	maxPriceAttempts = 4
 	retryDelay       = time.Second
+	clientTimeout    = 15 * time.Second
 )
 
 // Client calls CoinGecko's catalog and simple-price APIs.
@@ -36,7 +37,7 @@ func New(baseURL, userAgent string) *Client {
 	return &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		userAgent:  userAgent,
-		httpClient: &http.Client{Timeout: 5 * time.Second},
+		httpClient: &http.Client{Timeout: clientTimeout},
 		sleep:      sleep,
 	}
 }

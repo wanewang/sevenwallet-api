@@ -40,6 +40,16 @@ func newTestStore(t *testing.T) *Postgres {
 
 func usdc(a string) *string { return &a }
 
+func TestSchemaStoresMarketPriceUSDAsText(t *testing.T) {
+	normalized := strings.Join(strings.Fields(schemaSQL), " ")
+	if !strings.Contains(normalized, "price_usd TEXT") {
+		t.Fatal("coingecko_market_data.price_usd is not declared as TEXT")
+	}
+	if !strings.Contains(normalized, "ALTER COLUMN price_usd TYPE TEXT USING price_usd::text") {
+		t.Fatal("schema does not migrate an existing numeric price_usd column to TEXT")
+	}
+}
+
 type fakeBatchResults struct {
 	execErr    error
 	closeErr   error
@@ -397,6 +407,38 @@ func TestMarketDataBatchRoundTripAndRequestedKeys(t *testing.T) {
 	}
 	if got[second.Key].CoinGeckoID != "ethereum" || got[second.Key].PriceUSD != nil || got[second.Key].MarketDataUpdatedAt != nil {
 		t.Fatalf("nullable record = %#v", got[second.Key])
+	}
+}
+
+func TestMarketDataPriceUSDPreservesExactScientificNotation(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	wantByKey := map[marketdata.Key]string{
+		marketdata.ContractKey("ethereum", "0xsmall"): "1e-400",
+		marketdata.ContractKey("ethereum", "0xlarge"): "1e400",
+	}
+	records := make([]marketdata.Record, 0, len(wantByKey))
+	keys := make([]marketdata.Key, 0, len(wantByKey))
+	for key, price := range wantByKey {
+		price := price
+		keys = append(keys, key)
+		records = append(records, marketdata.Record{
+			Key: key, CoinGeckoID: key.TokenKey, PriceUSD: &price,
+			FetchedAt: time.Unix(2_000, 0).UTC(),
+		})
+	}
+	if err := s.SaveMarketData(ctx, records); err != nil {
+		t.Fatalf("SaveMarketData: %v", err)
+	}
+
+	got, err := s.LoadMarketData(ctx, keys)
+	if err != nil {
+		t.Fatalf("LoadMarketData: %v", err)
+	}
+	for key, want := range wantByKey {
+		if got[key].PriceUSD == nil || *got[key].PriceUSD != want {
+			t.Errorf("PriceUSD for %v = %#v, want exact %q", key, got[key].PriceUSD, want)
+		}
 	}
 }
 

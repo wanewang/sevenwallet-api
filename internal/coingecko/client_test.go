@@ -32,6 +32,12 @@ func TestListCoinsSendsPlatformFlagAndUserAgent(t *testing.T) {
 	}
 }
 
+func TestNewAllowsCatalogResponsesUpToFifteenSeconds(t *testing.T) {
+	if got := New("https://coingecko.test", "ua").httpClient.Timeout; got != 15*time.Second {
+		t.Fatalf("HTTP client timeout = %v, want 15s", got)
+	}
+}
+
 func TestGetPricesSendsExpectedQueryFlags(t *testing.T) {
 	var gotQuery map[string]string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

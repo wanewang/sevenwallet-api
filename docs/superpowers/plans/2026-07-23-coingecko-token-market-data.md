@@ -311,7 +311,7 @@ func (e *StatusError) Error() string {
 
 - [ ] **Step 4: Implement request construction and fixed retries**
 
-Create `client.go` with a five-second HTTP timeout, context-aware sleeper, `maxPriceAttempts=4`, and `retryDelay=time.Second`. `ListCoins` must call `/coins/list?include_platform=true`. `GetPrices` must call `/simple/price` with `ids=strings.Join(ids, ",")`, `vs_currencies=usd`, and all three include flags.
+Create `client.go` with a 15-second HTTP timeout, context-aware sleeper, `maxPriceAttempts=4`, and `retryDelay=time.Second`. The request-time enrichment context remains the tighter limit for `/simple/price`. `ListCoins` must call `/coins/list?include_platform=true`. `GetPrices` must call `/simple/price` with `ids=strings.Join(ids, ",")`, `vs_currencies=usd`, and all three include flags.
 
 Use this retry loop and classification:
 
@@ -603,7 +603,7 @@ func NewRefresher(client CoinListClient, store CatalogStore, holder *Holder, int
 }
 ```
 
-`Bootstrap` returns no error. It attempts fetch/build/replace/set; on any failure it loads the last non-empty PostgreSQL snapshot. If neither source works, it logs and leaves the holder empty. Log the selected bootstrap source and row count. The periodic ticker repeats fetch/build/replace/set, logs the successful row count or failure, and never changes the holder before PostgreSQL commit.
+`Bootstrap` returns no error. It attempts fetch/build/replace/set; on any failure it loads the last non-empty PostgreSQL snapshot with a fresh bounded context so an expired fetch context cannot disable fallback. If neither source works, it logs and leaves the holder empty. Log the selected bootstrap source and row count. The periodic ticker repeats fetch/build/replace/set, logs the successful row count or failure, and never changes the holder before PostgreSQL commit.
 
 - [ ] **Step 6: Run catalog persistence/refresher tests**
 

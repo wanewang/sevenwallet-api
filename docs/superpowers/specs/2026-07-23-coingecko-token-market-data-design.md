@@ -152,7 +152,9 @@ A thin HTTP client owns CoinGecko-specific behavior:
   request.
 - Decode response numbers without losing the string representation required by
   the existing `price` and `priceUSD` fields.
-- Bound response handling with the request context and HTTP-client timeout.
+- Bound response handling with the request context and a 15-second HTTP-client
+  timeout. The shorter enrichment context remains the effective limit for
+  request-time price calls.
 - Classify errors for the retry policy.
 
 The client exposes domain-neutral CoinGecko response types. It does not know
@@ -469,7 +471,7 @@ CREATE TABLE IF NOT EXISTS coingecko_market_data (
     chain                TEXT        NOT NULL,
     token_key            TEXT        NOT NULL,
     coingecko_id         TEXT        NOT NULL,
-    price_usd            NUMERIC,
+    price_usd            TEXT,
     change_24h_percent   NUMERIC,
     market_cap_usd       NUMERIC,
     market_updated_at    TIMESTAMPTZ,
@@ -477,6 +479,10 @@ CREATE TABLE IF NOT EXISTS coingecko_market_data (
     PRIMARY KEY (chain, token_key)
 );
 ```
+
+`price_usd` is text so PostgreSQL preserves CoinGecko's exact JSON number
+literal, including scientific notation, consistently with Redis and fresh API
+responses. Migration also converts an existing numeric column to text.
 
 `wallet_tokens` does not gain CoinGecko columns. The global market tables avoid
 duplicating one token's market data for every wallet.
