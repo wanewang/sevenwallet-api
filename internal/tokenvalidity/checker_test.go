@@ -140,14 +140,14 @@ func TestValidatePossibleSpamIsInvalid(t *testing.T) {
 	}
 }
 
-func TestValidateUnverifiedIsInvalid(t *testing.T) {
+func TestValidateUnverifiedNonSpamIsValid(t *testing.T) {
 	m := &fakeMoralis{meta: moralis.Metadata{VerifiedContract: false, PossibleSpam: false}}
 	got, err := newChecker(m, &fakeCache{}, &fakeStore{}).Validate(context.Background(), "0xABC")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Valid {
-		t.Error("unverified token must be invalid")
+	if !got.Valid {
+		t.Error("non-spam token must be valid regardless of verified_contract")
 	}
 }
 

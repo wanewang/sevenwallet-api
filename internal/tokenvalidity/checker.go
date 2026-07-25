@@ -99,7 +99,7 @@ func (c *Checker) Validate(ctx context.Context, address string) (wallet.Validati
 // validationFromRecord applies the validity rule and maps metadata for enrichment.
 func validationFromRecord(r Record) wallet.Validation {
 	return wallet.Validation{
-		Valid:    !r.PossibleSpam && r.Verified,
+		Valid:    !r.PossibleSpam,
 		Symbol:   r.Symbol,
 		Name:     r.Name,
 		LogoURI:  r.Logo,
