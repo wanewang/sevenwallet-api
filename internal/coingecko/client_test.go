@@ -3,6 +3,7 @@ package coingecko
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -270,19 +271,179 @@ func TestGetPricesPreservesNullableResponseFields(t *testing.T) {
 }
 
 func TestGetPricesWithNoIDsReturnsEmptyMap(t *testing.T) {
-	prices, err := New("://bad-url", "ua").GetPrices(context.Background(), nil)
+	var logs []string
+	prices, err := New("://bad-url", "ua", WithLogf(func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})).GetPrices(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("GetPrices: %v", err)
 	}
 	if prices == nil || len(prices) != 0 {
 		t.Fatalf("prices=%v, want non-nil empty map", prices)
 	}
+	if len(logs) != 0 {
+		t.Fatalf("logs=%v, want no diagnostics without a provider request", logs)
+	}
+}
+
+func TestListCoinsDiagnosticsContainOnlySanitizedURL(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusBadGateway} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var logs []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if status != http.StatusOK {
+					w.WriteHeader(status)
+					return
+				}
+				_, _ = io.WriteString(w, `[{"id":"usd-coin","symbol":"usdc","name":"USDC","platforms":{"ethereum":"0xA0B8"}}]`)
+			}))
+			defer srv.Close()
+			c := New(srv.URL, "ua", WithLogf(func(format string, args ...any) {
+				logs = append(logs, fmt.Sprintf(format, args...))
+			}))
+			_, _ = c.ListCoins(context.Background())
+			want := srv.URL + "/coins/list?include_platform=true"
+			if len(logs) != 1 || logs[0] != want {
+				t.Fatalf("logs=%q, want only %q", logs, want)
+			}
+			for _, forbidden := range []string{"usd-coin", "USDC", "status", "error", "provider_api"} {
+				if strings.Contains(logs[0], forbidden) {
+					t.Fatalf("coin-list log contains %q: %q", forbidden, logs[0])
+				}
+			}
+		})
+	}
+}
+
+func TestGetPricesDiagnosticsCoverSuccessAndFailures(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		var logs []string
+		c := New("https://coingecko.test", "ua", WithLogf(func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		}))
+		c.httpClient = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return testResponse(http.StatusOK, `{"ethereum":{"usd":3210.45}}`), nil
+		})}
+		if _, err := c.GetPrices(context.Background(), []string{"ethereum"}); err != nil {
+			t.Fatalf("GetPrices: %v", err)
+		}
+		joined := strings.Join(logs, "\n")
+		for _, want := range []string{"provider=coingecko", "operation=get_prices", "connecting method=GET", "ids=ethereum", `"ethereum":{"usd":3210.45`} {
+			if !strings.Contains(joined, want) {
+				t.Errorf("logs missing %q: %s", want, joined)
+			}
+		}
+	})
+
+	t.Run("status logs each retry", func(t *testing.T) {
+		var logs []string
+		c := New("https://coingecko.test", "ua", WithLogf(func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		}))
+		c.httpClient = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return testResponse(http.StatusTooManyRequests, "busy"), nil
+		})}
+		c.sleep = func(context.Context, time.Duration) error { return nil }
+		_, _ = c.GetPrices(context.Background(), []string{"ethereum"})
+		joined := strings.Join(logs, "\n")
+		if got := strings.Count(joined, "operation=get_prices connecting"); got != maxPriceAttempts {
+			t.Fatalf("connection logs=%d, want %d: %s", got, maxPriceAttempts, joined)
+		}
+		if got := strings.Count(joined, "failure status=429"); got != maxPriceAttempts {
+			t.Fatalf("status logs=%d, want %d: %s", got, maxPriceAttempts, joined)
+		}
+	})
+
+	t.Run("transport", func(t *testing.T) {
+		var logs []string
+		c := New("https://coingecko.test", "ua", WithLogf(func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		}))
+		c.httpClient = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("connection refused")
+		})}
+		c.sleep = func(context.Context, time.Duration) error { return nil }
+		_, _ = c.GetPrices(context.Background(), []string{"ethereum"})
+		if joined := strings.Join(logs, "\n"); !strings.Contains(joined, "failure stage=transport") {
+			t.Fatalf("logs = %s", joined)
+		}
+	})
+
+	t.Run("decode", func(t *testing.T) {
+		var logs []string
+		c := New("https://coingecko.test", "ua", WithLogf(func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		}))
+		c.httpClient = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return testResponse(http.StatusOK, `{`), nil
+		})}
+		c.sleep = func(context.Context, time.Duration) error { return nil }
+		_, _ = c.GetPrices(context.Background(), []string{"ethereum"})
+		if joined := strings.Join(logs, "\n"); !strings.Contains(joined, "failure stage=decode") {
+			t.Fatalf("logs = %s", joined)
+		}
+	})
+}
+
+func TestDiagnosticsPreserveCoinGeckoRequestsRetriesResultsAndErrors(t *testing.T) {
+	type snapshot struct {
+		method string
+		url    string
+		accept string
+		agent  string
+	}
+	run := func(enabled bool, status int) ([]snapshot, []time.Duration, map[string]SimplePrice, error) {
+		var requests []snapshot
+		var opts []Option
+		if enabled {
+			opts = append(opts, WithLogf(func(string, ...any) {}))
+		}
+		c := New("https://coingecko.test/api/v3", "wallet-api-test", opts...)
+		c.httpClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			requests = append(requests, snapshot{r.Method, r.URL.String(), r.Header.Get("Accept"), r.Header.Get("User-Agent")})
+			if status != http.StatusOK {
+				return testResponse(status, "busy"), nil
+			}
+			return testResponse(http.StatusOK, `{"ethereum":{"usd":3210.45}}`), nil
+		})}
+		var waits []time.Duration
+		c.sleep = func(_ context.Context, delay time.Duration) error {
+			waits = append(waits, delay)
+			return nil
+		}
+		prices, err := c.GetPrices(context.Background(), []string{"ethereum"})
+		return requests, waits, prices, err
+	}
+
+	disabledRequests, disabledWaits, disabledValues, disabledErr := run(false, http.StatusOK)
+	enabledRequests, enabledWaits, enabledValues, enabledErr := run(true, http.StatusOK)
+	if !reflect.DeepEqual(disabledRequests, enabledRequests) || !reflect.DeepEqual(disabledWaits, enabledWaits) || !reflect.DeepEqual(disabledValues, enabledValues) || disabledErr != nil || enabledErr != nil {
+		t.Fatalf("success differs: disabled=(%+v,%v,%+v,%v) enabled=(%+v,%v,%+v,%v)", disabledRequests, disabledWaits, disabledValues, disabledErr, enabledRequests, enabledWaits, enabledValues, enabledErr)
+	}
+
+	disabledRequests, disabledWaits, _, disabledErr = run(false, http.StatusInternalServerError)
+	enabledRequests, enabledWaits, _, enabledErr = run(true, http.StatusInternalServerError)
+	if !reflect.DeepEqual(disabledRequests, enabledRequests) || !reflect.DeepEqual(disabledWaits, enabledWaits) || len(disabledRequests) != maxPriceAttempts || disabledErr == nil || enabledErr == nil || disabledErr.Error() != enabledErr.Error() {
+		t.Fatalf("failure differs: disabled=(%+v,%v,%v) enabled=(%+v,%v,%v)", disabledRequests, disabledWaits, disabledErr, enabledRequests, enabledWaits, enabledErr)
+	}
+}
+
+func TestNilCoinGeckoDiagnosticHookIsNoOp(t *testing.T) {
+	(&Client{}).diagnosticf("ignored %s", "message")
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
+}
+
+func testResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+	}
 }
 
 type failingReadCloser struct {

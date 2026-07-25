@@ -64,15 +64,25 @@ func main() {
 	go refresher.Run(context.Background())
 	log.Printf("token list ready: %d tokens (chain=%s, refresh=%s)", holder.Current().Count(), cfg.LifiChain, cfg.LifiRefresh)
 
-	coinGeckoClient := coingecko.New(cfg.CoinGeckoBaseURL, cfg.CoinGeckoUserAgent)
+	var coinGeckoOptions []coingecko.Option
+	if cfg.ProviderAPILogging {
+		coinGeckoOptions = append(coinGeckoOptions, coingecko.WithLogf(log.Printf))
+	}
+	coinGeckoClient := coingecko.New(cfg.CoinGeckoBaseURL, cfg.CoinGeckoUserAgent, coinGeckoOptions...)
 	coinCatalog := &marketdata.Holder{}
 	coinRefresher := marketdata.NewRefresher(coinGeckoClient, pg, coinCatalog, cfg.CoinGeckoListRefresh)
 	coinRefresher.Bootstrap(setupCtx)
 	go coinRefresher.Run(context.Background())
 	log.Printf("marketdata catalog ready: %d mappings (platform=%s, refresh=%s)", coinCatalog.Count(), cfg.CoinGeckoPlatform, cfg.CoinGeckoListRefresh)
 
-	ac := alchemy.New(cfg.AlchemyAPIKey, cfg.AlchemyNetwork)
-	moralisClient := moralis.New(cfg.MoralisAPIKey, cfg.MoralisChain)
+	var alchemyOptions []alchemy.Option
+	var moralisOptions []moralis.Option
+	if cfg.ProviderAPILogging {
+		alchemyOptions = append(alchemyOptions, alchemy.WithLogf(log.Printf))
+		moralisOptions = append(moralisOptions, moralis.WithLogf(log.Printf))
+	}
+	ac := alchemy.New(cfg.AlchemyAPIKey, cfg.AlchemyNetwork, alchemyOptions...)
+	moralisClient := moralis.New(cfg.MoralisAPIKey, cfg.MoralisChain, moralisOptions...)
 	validator := tokenvalidity.NewChecker(moralisClient, redisCache, pg, cfg.MoralisChain, cfg.MoralisRecheck, cfg.MoralisRedisTTL)
 	coinMarket := marketdata.NewService(
 		coinGeckoClient, redisCache, pg, coinCatalog,

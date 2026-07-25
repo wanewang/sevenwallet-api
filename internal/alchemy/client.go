@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"wallet-api/internal/providerlog"
 )
 
 // Client calls Alchemy's HTTP APIs.
@@ -20,16 +22,37 @@ type Client struct {
 	httpClient *http.Client
 	tokensURL  string // Portfolio API: tokens-by-address
 	rpcURL     string // JSON-RPC endpoint (getAssetTransfers)
+	logf       func(string, ...any)
+}
+
+// Option configures an Alchemy Client.
+type Option func(*Client)
+
+// WithLogf enables provider diagnostics using logf. A nil hook is a no-op.
+func WithLogf(logf func(string, ...any)) Option {
+	return func(c *Client) { c.logf = logf }
 }
 
 // New builds a Client with production Alchemy URLs.
-func New(apiKey, network string) *Client {
-	return &Client{
+func New(apiKey, network string, opts ...Option) *Client {
+	c := &Client{
 		apiKey:     apiKey,
 		network:    network,
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 		tokensURL:  fmt.Sprintf("https://api.g.alchemy.com/data/v1/%s/assets/tokens/by-address", apiKey),
 		rpcURL:     fmt.Sprintf("https://%s.g.alchemy.com/v2/%s", network, apiKey),
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(c)
+		}
+	}
+	return c
+}
+
+func (c *Client) diagnosticf(format string, args ...any) {
+	if c != nil && c.logf != nil {
+		c.logf(format, args...)
 	}
 }
 
@@ -76,7 +99,8 @@ func (c *Client) GetTokens(ctx context.Context, address, network string) ([]Toke
 		IncludeErc20Tokens:  true,
 	}
 	var resp tokensResponse
-	if err := c.postJSON(ctx, c.tokensURL, reqBody, &resp); err != nil {
+	details := fmt.Sprintf("network=%q address=%q", network, address)
+	if err := c.postJSON(ctx, "get_tokens", c.tokensURL, reqBody, &resp, details); err != nil {
 		return nil, err
 	}
 	tokens := make([]Token, 0, len(resp.Data.Tokens))
@@ -101,31 +125,49 @@ func (c *Client) GetTokens(ctx context.Context, address, network string) ([]Toke
 }
 
 // postJSON marshals body, POSTs it to url, and decodes the response into out.
-func (c *Client) postJSON(ctx context.Context, url string, body, out any) error {
+func (c *Client) postJSON(ctx context.Context, operation, url string, body, out any, details string) error {
 	buf, err := json.Marshal(body)
 	if err != nil {
+		c.diagnosticError(operation, "marshal", err)
 		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
 	if err != nil {
+		c.diagnosticError(operation, "request", err)
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	c.diagnosticf("provider_api provider=alchemy operation=%s connecting method=%s %s", operation, http.MethodPost, details)
 	res, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("alchemy request failed: %w", err)
+		wrapped := fmt.Errorf("alchemy request failed: %w", err)
+		c.diagnosticError(operation, "transport", wrapped)
+		return wrapped
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		// Drain the body so the connection can be reused by the transport.
 		_, _ = io.Copy(io.Discard, res.Body)
+		c.diagnosticf("provider_api provider=alchemy operation=%s failure status=%d", operation, res.StatusCode)
 		return fmt.Errorf("alchemy returned status %d", res.StatusCode)
 	}
 	if err := json.NewDecoder(res.Body).Decode(out); err != nil {
-		return fmt.Errorf("decode alchemy response: %w", err)
+		wrapped := fmt.Errorf("decode alchemy response: %w", err)
+		c.diagnosticError(operation, "decode", wrapped)
+		return wrapped
 	}
+	c.diagnosticf("provider_api provider=alchemy operation=%s result=%s", operation, providerlog.JSON(out, c.apiKey))
 	return nil
+}
+
+func (c *Client) diagnosticError(operation, stage string, err error) {
+	c.diagnosticf(
+		"provider_api provider=alchemy operation=%s failure stage=%s error=%q",
+		operation,
+		stage,
+		providerlog.Redact(err.Error(), c.apiKey),
+	)
 }
 
 type rpcRequest struct {
@@ -185,11 +227,14 @@ func (c *Client) fetchTransfers(ctx context.Context, direction, address string, 
 	}
 	body := rpcRequest{ID: 1, JSONRPC: "2.0", Method: "alchemy_getAssetTransfers", Params: []any{params}}
 	var resp transfersResponse
-	if err := c.postJSON(ctx, c.rpcURL, body, &resp); err != nil {
+	details := fmt.Sprintf("direction=%q address=%q limit=%d", direction, address, limit)
+	if err := c.postJSON(ctx, "get_transfers", c.rpcURL, body, &resp, details); err != nil {
 		return nil, err
 	}
 	if resp.Error != nil {
-		return nil, fmt.Errorf("alchemy rpc error: %s", resp.Error.Message)
+		err := fmt.Errorf("alchemy rpc error: %s", resp.Error.Message)
+		c.diagnosticError("get_transfers", "rpc", err)
+		return nil, err
 	}
 	out := make([]Transfer, 0, len(resp.Result.Transfers))
 	for _, t := range resp.Result.Transfers {

@@ -10,19 +10,20 @@ import (
 
 // Config holds all runtime configuration, sourced from environment variables.
 type Config struct {
-	AlchemyAPIKey   string
-	AlchemyNetwork  string
-	DatabaseURL     string
-	CacheTTL        time.Duration
-	Port            string
-	RedisURL        string
-	LifiTokensURL   string
-	LifiChain       string
-	LifiRefresh     time.Duration
-	MoralisAPIKey   string
-	MoralisChain    string
-	MoralisRecheck  time.Duration
-	MoralisRedisTTL time.Duration
+	AlchemyAPIKey      string
+	AlchemyNetwork     string
+	DatabaseURL        string
+	CacheTTL           time.Duration
+	Port               string
+	ProviderAPILogging bool
+	RedisURL           string
+	LifiTokensURL      string
+	LifiChain          string
+	LifiRefresh        time.Duration
+	MoralisAPIKey      string
+	MoralisChain       string
+	MoralisRecheck     time.Duration
+	MoralisRedisTTL    time.Duration
 
 	CoinGeckoBaseURL       string
 	CoinGeckoUserAgent     string
@@ -41,11 +42,12 @@ func Load() (Config, error) {
 // loadFrom reads configuration using the supplied getenv function (testable).
 func loadFrom(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		AlchemyAPIKey:  getenv("ALCHEMY_API_KEY"),
-		AlchemyNetwork: getenv("ALCHEMY_NETWORK"),
-		DatabaseURL:    getenv("DATABASE_URL"),
-		Port:           getenv("PORT"),
-		RedisURL:       getenv("REDIS_URL"),
+		AlchemyAPIKey:      getenv("ALCHEMY_API_KEY"),
+		AlchemyNetwork:     getenv("ALCHEMY_NETWORK"),
+		DatabaseURL:        getenv("DATABASE_URL"),
+		Port:               getenv("PORT"),
+		ProviderAPILogging: getenv("PROVIDER_API_LOGGING") == "true" && getenv("K_SERVICE") == "",
+		RedisURL:           getenv("REDIS_URL"),
 	}
 	if cfg.AlchemyAPIKey == "" {
 		return Config{}, fmt.Errorf("ALCHEMY_API_KEY is required")
