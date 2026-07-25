@@ -59,7 +59,7 @@ Set via environment variables:
 | `MORALIS_RECHECK_SECONDS` | no | `604800` | Verdict re-check window, ~1 week (positive integer) |
 | `MORALIS_REDIS_TTL_SECONDS` | no | `86400` | Verdict Redis hot-cache TTL, ~1 day (positive integer) |
 
-Responses are filtered to the LI.FI token allowlist: tokens on the allowlist are enriched with `logoURI`, `coinKey`, and `priceUSD`. Unlisted ERC-20s are no longer simply hidden — they are checked against the Moralis API and kept (enriched with Moralis metadata) only if they are not flagged as `possible_spam` and are a `verified_contract`; otherwise they are dropped. The allowlist is fetched at startup and refreshed hourly.
+Responses are filtered to the LI.FI token allowlist: tokens on the allowlist are enriched with `logoURI`, `coinKey`, and `priceUSD`. Unlisted ERC-20s are no longer simply hidden — they are checked against the Moralis API and kept (enriched with Moralis metadata) unless they are flagged as `possible_spam`; otherwise they are dropped. The allowlist is fetched at startup and refreshed hourly.
 
 Provider API diagnostics are off by default. For local troubleshooting, set `PROVIDER_API_LOGGING=true` to log Alchemy and Moralis request attempts and decoded results, plus CoinGecko price attempts and results. CoinGecko's `/coins/list` operation logs only its sanitized request URL, never the catalog response or outcome details. The feature does not add LI.FI request or response logging. Cloud Run always suppresses these diagnostics because its `K_SERVICE` variable is present, even if the opt-in is set. Local diagnostic results can contain wallet addresses and provider data; API credentials and credential-bearing URLs are redacted.
 

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Give unlisted ERC-20s a second-chance validity gate via Moralis token metadata, returning only non-spam verified tokens (enriched with Moralis metadata) and dropping the rest.
+**Goal:** Give unlisted ERC-20s a second-chance validity gate via Moralis token metadata, returning non-spam tokens (enriched with Moralis metadata) and dropping the rest.
 
 **Architecture:** A new `moralis` HTTP client and a `tokenvalidity.Checker` that resolves each unlisted contract through a three-tier lookup — Redis (1-day hot cache) → Postgres (permanent, weekly re-check) → Moralis. `wallet.Service` gains a `Validator` dependency; `filterTokens` consults it for ERC-20s missing from the LI.FI allowlist, keeping + enriching valid ones and dropping invalid/unknown ones (fail-closed, with a stale-Postgres fallback on Moralis errors).
 
@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Public repository: never put `Claude-Session:` links or `https://claude.ai/code/session_...` URLs in commits. `Co-Authored-By:` and the `🤖 Generated with Claude Code` line are fine.
-- Validity rule (single source of truth, lives in `tokenvalidity`): `Valid = !possible_spam && verified_contract`.
+- Validity rule (single source of truth, lives in `tokenvalidity`): `Valid = !possible_spam`; `verified_contract` is metadata only.
 - Re-check window: **1 week** (default `604800` s). Redis hot-cache TTL: **1 day** (default `86400` s).
 - `MORALIS_API_KEY` is **required** (process fails to start without it), like `ALCHEMY_API_KEY`.
 - Fail-closed: a Moralis error with no stored verdict drops the token; with a stale Postgres verdict, the stale verdict is used.
@@ -612,14 +612,14 @@ func TestValidatePossibleSpamIsInvalid(t *testing.T) {
 	}
 }
 
-func TestValidateUnverifiedIsInvalid(t *testing.T) {
+func TestValidateUnverifiedNonSpamIsValid(t *testing.T) {
 	m := &fakeMoralis{meta: moralis.Metadata{VerifiedContract: false, PossibleSpam: false}}
 	got, err := newChecker(m, &fakeCache{}, &fakeStore{}).Validate(context.Background(), "0xABC")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Valid {
-		t.Error("unverified token must be invalid")
+	if !got.Valid {
+		t.Error("non-spam token must be valid regardless of verified_contract")
 	}
 }
 
@@ -758,7 +758,7 @@ func (c *Checker) Validate(ctx context.Context, address string) (wallet.Validati
 // validationFromRecord applies the validity rule and maps metadata for enrichment.
 func validationFromRecord(r Record) wallet.Validation {
 	return wallet.Validation{
-		Valid:    !r.PossibleSpam && r.Verified,
+		Valid:    !r.PossibleSpam,
 		Symbol:   r.Symbol,
 		Name:     r.Name,
 		LogoURI:  r.Logo,

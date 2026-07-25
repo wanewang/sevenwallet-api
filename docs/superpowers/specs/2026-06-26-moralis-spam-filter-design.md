@@ -9,19 +9,19 @@ Today `wallet.Service.filterTokens` keeps native tokens and ERC-20s present in
 the LI.FI allowlist, and **silently drops every other ERC-20**. This change adds
 a second-chance gate: an unlisted ERC-20 is checked against the
 [Moralis token-metadata API](https://docs.moralis.com/data-api/evm/token/metadata/token-metadata).
-If Moralis reports the contract is **not** `possible_spam` **and** is a
-`verified_contract`, the token is valid and returned (enriched with Moralis
-metadata); otherwise it is invalid and dropped. Verdicts and metadata are cached
-in a three-tier lookup — Redis (1-day hot cache) → Postgres (permanent source of
-truth, re-checked weekly) → Moralis — so a contract hits Moralis at most once per
-week and is usually served from Redis.
+If Moralis reports the contract is **not** `possible_spam`, the token is valid
+and returned (enriched with Moralis metadata), regardless of
+`verified_contract`; otherwise it is invalid and dropped. Verdicts and metadata
+are cached in a three-tier lookup — Redis (1-day hot cache) → Postgres
+(permanent source of truth, re-checked weekly) → Moralis — so a contract hits
+Moralis at most once per week and is usually served from Redis.
 
 ## Goals
 
-- Legitimate-but-unlisted ERC-20s are no longer hidden — they pass if Moralis
-  vouches for them, and are returned with Moralis metadata (logo/symbol/name/
-  decimals) in the same enriched shape as LI.FI-listed tokens.
-- Spam / unverified contracts are never returned.
+- Non-spam unlisted ERC-20s are no longer hidden and are returned with Moralis
+  metadata (logo/symbol/name/decimals) in the same enriched shape as LI.FI-listed
+  tokens.
+- Contracts flagged as spam are never returned; unverified non-spam contracts are allowed.
 - Cheap in steady state: served from Redis; Moralis is hit at most once per
   contract per week.
 - Isolated, testable units with clear boundaries.
@@ -130,7 +130,8 @@ func (c *Checker) Validate(ctx context.Context, address string) (wallet.Validati
 
 `tokenvalidity` imports `wallet` and returns `wallet.Validation`, mirroring how
 `store` imports `wallet`. The validity rule
-`Valid = !PossibleSpam && Verified` lives here.
+`Valid = !PossibleSpam` lives here. `Verified` remains cached as provider
+metadata but does not affect validity.
 
 **Lookup order (`Validate`):**
 
@@ -293,7 +294,8 @@ GetTokens → (cache-hit or fresh) → filterTokens(ctx, portfolio)
   clock — Redis hit (no PG/Moralis call); Redis miss → PG fresh; PG stale →
   Moralis → persists PG + Redis; all-miss → Moralis → persists; Moralis error
   with stale PG row → returns stale; Moralis error with no row → `(invalid, err)`;
-  `Valid = !possible_spam && verified` truth table; enrichment fields populated.
+  `Valid = !possible_spam` truth table, including unverified non-spam tokens;
+  enrichment fields populated.
 - **`rediscache`**: `LoadTokenMeta`/`SaveTokenMeta` round-trip and miss.
 - **`store`**: `GetTokenMeta`/`SaveTokenMeta` round-trip and upsert-overwrite,
   following the existing `store_test.go` style.
