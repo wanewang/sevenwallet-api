@@ -62,7 +62,7 @@ func (f *fakeCMCStore) SaveCoinMarketCapMarketData(_ context.Context, records []
 func cmcService(now time.Time, mappings []CoinMapping, client *fakeCMCPriceClient, cache *fakeCMCCache, store *fakeCMCStore) *Service {
 	holder := &Holder{}
 	holder.Set(NewCatalog(mappings))
-	s := NewService(client, cache, store, holder, 1, 1027, "ethereum", 30*time.Minute)
+	s := NewService(client, cache, store, nil, holder, 1, 1027, "ethereum", 30*time.Minute, 2*time.Hour)
 	s.now = func() time.Time { return now }
 	s.logf = func(string, ...any) {}
 	return s

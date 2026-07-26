@@ -103,20 +103,20 @@ func main() {
 	moralisClient := moralis.New(cfg.MoralisAPIKey, cfg.MoralisChain, moralisOptions...)
 	validator := tokenvalidity.NewChecker(moralisClient, redisCache, pg, cfg.MoralisChain, cfg.MoralisRecheck, cfg.MoralisRedisTTL)
 	coinMarket := marketdata.NewService(
-		coinGeckoClient, redisCache, pg, coinCatalog,
+		coinGeckoClient, redisCache, pg, redisCache, coinCatalog,
 		cfg.CoinGeckoPlatform, cfg.CoinGeckoNativeIDs,
-		cfg.CoinGeckoMarketTTL, cfg.CoinGeckoEnrichTimeout,
+		cfg.CoinGeckoMarketTTL, cfg.MarketMissTTL, cfg.CoinGeckoEnrichTimeout,
 	)
 	svc := wallet.NewService(ac, pg, pg, holder, validator, coinMarket, cfg.AlchemyNetwork, cfg.CacheTTL)
 	coinGeckoCompare := marketdata.NewService(
-		coinGeckoClient, redisCache, pg, coinCatalog,
+		coinGeckoClient, redisCache, pg, redisCache, coinCatalog,
 		marketChain.CoinGeckoPlatform, []string{marketChain.CoinGeckoNativeID},
-		cfg.CoinGeckoMarketTTL, cfg.TokenMarketEnrichTimeout,
+		cfg.CoinGeckoMarketTTL, cfg.MarketMissTTL, cfg.TokenMarketEnrichTimeout,
 	)
 	coinMarketCapCompare := cmcmarket.NewService(
-		cmcClient, redisCache, pg, cmcCatalog,
+		cmcClient, redisCache, pg, redisCache, cmcCatalog,
 		marketChain.CoinMarketCapPlatform, marketChain.CoinMarketCapNativeID,
-		marketChain.MarketChain, cfg.CoinMarketCapMarketTTL,
+		marketChain.MarketChain, cfg.CoinMarketCapMarketTTL, cfg.MarketMissTTL,
 	)
 	svc.SetMarketComparator(marketcompare.New(coinGeckoCompare, coinMarketCapCompare, cfg.TokenMarketEnrichTimeout))
 	router := api.NewRouter(svc)

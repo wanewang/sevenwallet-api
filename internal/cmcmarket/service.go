@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
-	"sort"
 	"strings"
 	"time"
 
 	"wallet-api/internal/coinmarketcap"
-	"wallet-api/internal/marketdata"
+	"wallet-api/internal/marketkey"
+	"wallet-api/internal/marketpipeline"
+	"wallet-api/internal/ptr"
 	"wallet-api/internal/wallet"
 )
 
@@ -19,13 +20,19 @@ type PriceClient interface {
 }
 
 type MarketCache interface {
-	LoadCoinMarketCapMarketData(context.Context, []marketdata.Key) (map[marketdata.Key]Record, error)
+	LoadCoinMarketCapMarketData(context.Context, []marketkey.Key) (map[marketkey.Key]Record, error)
 	SaveCoinMarketCapMarketData(context.Context, []CacheWrite) error
 }
 
 type MarketStore interface {
-	LoadCoinMarketCapMarketData(context.Context, []marketdata.Key) (map[marketdata.Key]Record, error)
+	LoadCoinMarketCapMarketData(context.Context, []marketkey.Key) (map[marketkey.Key]Record, error)
 	SaveCoinMarketCapMarketData(context.Context, []Record) error
+}
+
+// MissCache is the negative cache: tokens CoinMarketCap had no data for.
+type MissCache interface {
+	LoadCoinMarketCapMisses(context.Context, []marketkey.Key) (map[marketkey.Key]struct{}, error)
+	SaveCoinMarketCapMisses(context.Context, []marketkey.Key, time.Duration) error
 }
 
 // Service resolves wallet tokens to CMC IDs and returns fresh market data.
@@ -33,175 +40,178 @@ type Service struct {
 	client     PriceClient
 	cache      MarketCache
 	store      MarketStore
+	misses     MissCache
 	catalog    *Holder
 	platformID int64
 	nativeID   int64
 	chain      string
 	ttl        time.Duration
+	missTTL    time.Duration
 	now        func() time.Time
 	logf       func(string, ...any)
 }
 
-func NewService(client PriceClient, cache MarketCache, store MarketStore, catalog *Holder, platformID, nativeID int64, chain string, ttl time.Duration) *Service {
+func NewService(client PriceClient, cache MarketCache, store MarketStore, misses MissCache, catalog *Holder, platformID, nativeID int64, chain string, ttl, missTTL time.Duration) *Service {
 	return &Service{
-		client: client, cache: cache, store: store, catalog: catalog,
+		client: client, cache: cache, store: store, misses: misses, catalog: catalog,
 		platformID: platformID, nativeID: nativeID, chain: strings.ToLower(chain),
-		ttl: ttl, now: time.Now, logf: log.Printf,
+		ttl: ttl, missTTL: missTTL, now: time.Now, logf: log.Printf,
 	}
 }
 
 // LookupFresh returns CMC data aligned with tokens. Expired records are misses,
 // never fallbacks, and persistence failures do not discard usable provider data.
+// The cascade itself lives in marketpipeline; this method only resolves tokens
+// to CMC IDs and supplies the CMC-specific half.
 func (s *Service) LookupFresh(ctx context.Context, tokens []wallet.Token) []*wallet.CoinMarketCapMarket {
 	result := make([]*wallet.CoinMarketCapMarket, len(tokens))
 	if len(tokens) == 0 || s == nil {
 		return result
-	}
-	if ctx == nil {
-		ctx = context.Background()
 	}
 
 	expectedID, indexesByKey, keyOrder := s.resolve(tokens)
 	if len(keyOrder) == 0 {
 		return result
 	}
-	now := s.now().UTC()
-	complete := make(map[marketdata.Key]bool, len(keyOrder))
 
-	redisRecords := make(map[marketdata.Key]Record)
-	if s.cache != nil {
-		loaded, err := s.cache.LoadCoinMarketCapMarketData(ctx, keyOrder)
-		if err != nil {
-			s.logf("cmcmarket: redis load failed: %v", err)
-		} else {
-			redisRecords = loaded
-		}
-	}
-	for _, key := range keyOrder {
-		record, ok := matchingMarketRecord(redisRecords, key, expectedID[key])
-		if !ok || !record.Fresh(now, s.ttl) {
-			continue
-		}
-		if applyResult(result, indexesByKey[key], record) {
-			complete[key] = true
-		}
-	}
-
-	remaining := incompleteMarketKeys(keyOrder, complete)
-	postgresRecords := make(map[marketdata.Key]Record)
-	if s.store != nil && len(remaining) > 0 {
-		loaded, err := s.store.LoadCoinMarketCapMarketData(ctx, remaining)
-		if err != nil {
-			s.logf("cmcmarket: postgres load failed: %v", err)
-		} else {
-			postgresRecords = loaded
-		}
-	}
-	promotions := make([]CacheWrite, 0, len(remaining))
-	for _, key := range remaining {
-		record, ok := matchingMarketRecord(postgresRecords, key, expectedID[key])
-		if !ok || !record.Fresh(now, s.ttl) {
-			continue
-		}
-		if !applyResult(result, indexesByKey[key], record) {
-			continue
-		}
-		complete[key] = true
-		if ttl := record.RemainingTTL(now, s.ttl); ttl > 0 {
-			promotions = append(promotions, CacheWrite{Record: record, TTL: ttl})
-		}
-	}
-	if len(promotions) > 0 && s.cache != nil {
-		if err := s.cache.SaveCoinMarketCapMarketData(ctx, promotions); err != nil {
-			s.logf("cmcmarket: redis promotion failed: %v", err)
-		}
-	}
-
-	groups := make(map[int64][]marketdata.Key)
-	for _, key := range keyOrder {
-		if !complete[key] {
-			groups[expectedID[key]] = append(groups[expectedID[key]], key)
-		}
-	}
-	ids := make([]int64, 0, len(groups))
-	for id := range groups {
-		ids = append(ids, id)
-	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	for start := 0; start < len(ids); start += coinmarketcap.PriceBatchLimit {
-		if ctx.Err() != nil {
-			break
-		}
-		end := start + coinmarketcap.PriceBatchLimit
-		if end > len(ids) {
-			end = len(ids)
-		}
-		batchIDs := ids[start:end]
-		prices, err := s.clientPrices(ctx, batchIDs)
-		if err != nil {
-			s.logf("cmcmarket: price batch failed for %d IDs: %v", len(batchIDs), err)
-			if ctx.Err() != nil {
-				break
-			}
-			continue
-		}
-
-		fetchedAt := s.now().UTC()
-		fetched := make([]Record, 0)
-		for _, id := range batchIDs {
-			price, ok := prices[id]
-			if !ok || price.ID != id {
-				continue
-			}
-			for _, key := range groups[id] {
-				record := s.recordFromPrice(key, id, price, fetchedAt)
-				if !applyResult(result, indexesByKey[key], record) {
-					continue
-				}
-				complete[key] = true
-				fetched = append(fetched, record)
-			}
-		}
-		if len(fetched) == 0 {
-			continue
-		}
-		if s.store != nil {
-			if err := s.store.SaveCoinMarketCapMarketData(ctx, fetched); err != nil {
-				s.logf("cmcmarket: postgres save failed: %v", err)
-			}
-		}
-		if s.cache != nil {
-			writes := make([]CacheWrite, len(fetched))
-			for i, record := range fetched {
-				writes[i] = CacheWrite{Record: record, TTL: s.ttl}
-			}
-			if err := s.cache.SaveCoinMarketCapMarketData(ctx, writes); err != nil {
-				s.logf("cmcmarket: redis save failed: %v", err)
-			}
-		}
-	}
+	marketpipeline.Run[int64, Record](
+		ctx,
+		&provider{service: s, result: result},
+		marketpipeline.Request[int64]{
+			KeyOrder:     keyOrder,
+			ExpectedID:   expectedID,
+			IndexesByKey: indexesByKey,
+		},
+		marketpipeline.Options[Record]{},
+	)
 	return result
 }
 
-func (s *Service) resolve(tokens []wallet.Token) (map[marketdata.Key]int64, map[marketdata.Key][]int, []marketdata.Key) {
-	expectedID := make(map[marketdata.Key]int64, len(tokens))
-	indexesByKey := make(map[marketdata.Key][]int, len(tokens))
-	keyOrder := make([]marketdata.Key, 0, len(tokens))
-	seen := make(map[marketdata.Key]struct{}, len(tokens))
+// provider adapts Service to the shared cascade, closing over the output slice
+// so Apply can write into it.
+type provider struct {
+	service *Service
+	result  []*wallet.CoinMarketCapMarket
+}
+
+var _ marketpipeline.Provider[int64, Record] = (*provider)(nil)
+
+func (p *provider) LoadCache(ctx context.Context, keys []marketkey.Key) (map[marketkey.Key]Record, error) {
+	if p.service.cache == nil {
+		return nil, nil
+	}
+	return p.service.cache.LoadCoinMarketCapMarketData(ctx, keys)
+}
+
+func (p *provider) SaveCache(ctx context.Context, writes []marketpipeline.Write[Record]) error {
+	if p.service.cache == nil {
+		return nil
+	}
+	out := make([]CacheWrite, len(writes))
+	for i, w := range writes {
+		out[i] = CacheWrite{Record: w.Record, TTL: w.TTL}
+	}
+	return p.service.cache.SaveCoinMarketCapMarketData(ctx, out)
+}
+
+func (p *provider) LoadStore(ctx context.Context, keys []marketkey.Key) (map[marketkey.Key]Record, error) {
+	if p.service.store == nil {
+		return nil, nil
+	}
+	return p.service.store.LoadCoinMarketCapMarketData(ctx, keys)
+}
+
+func (p *provider) SaveStore(ctx context.Context, records []Record) error {
+	if p.service.store == nil {
+		return nil
+	}
+	return p.service.store.SaveCoinMarketCapMarketData(ctx, records)
+}
+
+func (p *provider) Fetch(ctx context.Context, ids []int64) (map[int64]Record, error) {
+	if p.service.client == nil {
+		return nil, context.Canceled
+	}
+	prices, err := p.service.client.GetPrices(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	fetchedAt := p.service.now().UTC()
+	records := make(map[int64]Record, len(prices))
+	for _, id := range ids {
+		price, ok := prices[id]
+		if !ok || price.ID != id {
+			continue
+		}
+		records[id] = p.service.recordFromPrice(id, price, fetchedAt)
+	}
+	return records, nil
+}
+
+func (p *provider) LoadMisses(ctx context.Context, keys []marketkey.Key) (map[marketkey.Key]struct{}, error) {
+	if p.service.misses == nil {
+		return nil, nil
+	}
+	return p.service.misses.LoadCoinMarketCapMisses(ctx, keys)
+}
+
+func (p *provider) SaveMisses(ctx context.Context, keys []marketkey.Key, ttl time.Duration) error {
+	if p.service.misses == nil {
+		return nil
+	}
+	return p.service.misses.SaveCoinMarketCapMisses(ctx, keys, ttl)
+}
+
+// HasData asks whether CoinMarketCap returned anything at all, which for this
+// provider is the same question Apply asks — a CMC record holds only a price
+// and a 24h change, so a record with neither is empty by any measure.
+func (p *provider) HasData(r Record) bool { return r.PriceUSD != nil || r.Change24H != nil }
+
+func (p *provider) MissTTL() time.Duration { return p.service.missTTL }
+
+func (p *provider) BatchLimit() int                          { return coinmarketcap.PriceBatchLimit }
+func (p *provider) Matches(r Record, expected int64) bool    { return r.CoinMarketCapID == expected }
+func (p *provider) FetchedAt(r Record) time.Time             { return r.FetchedAt }
+func (p *provider) WithKey(r Record, k marketkey.Key) Record { r.Key = k; return r }
+func (p *provider) TTL() time.Duration                       { return p.service.ttl }
+func (p *provider) Now() time.Time                           { return p.service.now() }
+func (p *provider) Logf(format string, args ...any)          { p.service.logf("cmcmarket: "+format, args...) }
+
+// Apply reports false for a record carrying neither a price nor a 24h change,
+// which is what keeps such a record out of the result and out of storage.
+func (p *provider) Apply(indexes []int, r Record) bool {
+	if r.PriceUSD == nil && r.Change24H == nil {
+		return false
+	}
+	for _, index := range indexes {
+		p.result[index] = &wallet.CoinMarketCapMarket{
+			ID:               r.CoinMarketCapID,
+			PriceUSD:         ptr.Clone(r.PriceUSD),
+			Change24HPercent: ptr.Clone(r.Change24H),
+		}
+	}
+	return true
+}
+
+func (s *Service) resolve(tokens []wallet.Token) (map[marketkey.Key]int64, map[marketkey.Key][]int, []marketkey.Key) {
+	expectedID := make(map[marketkey.Key]int64, len(tokens))
+	indexesByKey := make(map[marketkey.Key][]int, len(tokens))
+	keyOrder := make([]marketkey.Key, 0, len(tokens))
+	seen := make(map[marketkey.Key]struct{}, len(tokens))
 	for index, token := range tokens {
-		var key marketdata.Key
+		var key marketkey.Key
 		var id int64
 		var ok bool
 		if token.IsNative || token.TokenAddress == nil {
-			key = marketdata.NativeKey(s.chain, token.Symbol)
+			key = marketkey.NativeKey(s.chain, token.Symbol)
 			id, ok = s.nativeID, s.nativeID > 0
 		} else if strings.TrimSpace(*token.TokenAddress) != "" && s.catalog != nil {
-			key = marketdata.ContractKey(s.chain, *token.TokenAddress)
+			key = marketkey.ContractKey(s.chain, *token.TokenAddress)
 			id, ok = s.catalog.ResolveContract(s.platformID, *token.TokenAddress, token.Symbol)
 		}
 		if !ok {
 			if token.TokenAddress != nil && !token.IsNative {
-				key = marketdata.ContractKey(s.chain, *token.TokenAddress)
+				key = marketkey.ContractKey(s.chain, *token.TokenAddress)
 				s.logf("cmcmarket: unresolved contract mapping source=cmc chain=%q address=%q", key.Chain, key.TokenKey)
 			}
 			continue
@@ -219,34 +229,8 @@ func (s *Service) resolve(tokens []wallet.Token) (map[marketdata.Key]int64, map[
 	return expectedID, indexesByKey, keyOrder
 }
 
-func (s *Service) clientPrices(ctx context.Context, ids []int64) (map[int64]coinmarketcap.SimplePrice, error) {
-	if s.client == nil {
-		return nil, context.Canceled
-	}
-	return s.client.GetPrices(ctx, ids)
-}
-
-func matchingMarketRecord(records map[marketdata.Key]Record, key marketdata.Key, expectedID int64) (Record, bool) {
-	record, ok := records[key]
-	if !ok || record.CoinMarketCapID != expectedID {
-		return Record{}, false
-	}
-	record.Key = key
-	return record, true
-}
-
-func incompleteMarketKeys(keys []marketdata.Key, complete map[marketdata.Key]bool) []marketdata.Key {
-	remaining := make([]marketdata.Key, 0, len(keys))
-	for _, key := range keys {
-		if !complete[key] {
-			remaining = append(remaining, key)
-		}
-	}
-	return remaining
-}
-
-func (s *Service) recordFromPrice(key marketdata.Key, id int64, price coinmarketcap.SimplePrice, fetchedAt time.Time) Record {
-	record := Record{Key: key, CoinMarketCapID: id, FetchedAt: fetchedAt}
+func (s *Service) recordFromPrice(id int64, price coinmarketcap.SimplePrice, fetchedAt time.Time) Record {
+	record := Record{CoinMarketCapID: id, FetchedAt: fetchedAt}
 	if price.Price != nil {
 		var parsed json.Number
 		if err := json.Unmarshal([]byte(price.Price.String()), &parsed); err != nil || parsed.String() != price.Price.String() {
@@ -268,34 +252,4 @@ func (s *Service) recordFromPrice(key marketdata.Key, id int64, price coinmarket
 		}
 	}
 	return record
-}
-
-func applyResult(result []*wallet.CoinMarketCapMarket, indexes []int, record Record) bool {
-	if record.PriceUSD == nil && record.Change24H == nil {
-		return false
-	}
-	for _, index := range indexes {
-		result[index] = &wallet.CoinMarketCapMarket{
-			ID:               record.CoinMarketCapID,
-			PriceUSD:         cloneString(record.PriceUSD),
-			Change24HPercent: cloneFloat(record.Change24H),
-		}
-	}
-	return true
-}
-
-func cloneString(value *string) *string {
-	if value == nil {
-		return nil
-	}
-	copy := *value
-	return &copy
-}
-
-func cloneFloat(value *float64) *float64 {
-	if value == nil {
-		return nil
-	}
-	copy := *value
-	return &copy
 }

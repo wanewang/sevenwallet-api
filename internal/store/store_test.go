@@ -175,7 +175,10 @@ func TestGetLatestTokensReturnsExpiredAndDistinguishesEmptyFromMissing(t *testin
 	if err != nil || !ok {
 		t.Fatalf("GetLatestTokens ok=%v err=%v", ok, err)
 	}
-	if got.FetchedAt != fetchedAt || got.Tokens == nil || len(got.Tokens) != 0 {
+	// Compare instants, not structs: == on time.Time also compares the location
+	// pointer, and the driver returns time.Local where the fixture used UTC, so
+	// == can never hold here however the host clock is configured.
+	if !got.FetchedAt.Equal(fetchedAt) || got.Tokens == nil || len(got.Tokens) != 0 {
 		t.Fatalf("portfolio = %#v", got)
 	}
 	if _, ok, err := s.GetLatestTokens(ctx, "0xmissing", "eth-mainnet"); err != nil || ok {

@@ -37,6 +37,11 @@ type Config struct {
 	CoinMarketCapListRefresh time.Duration
 	CoinMarketCapMarketTTL   time.Duration
 	TokenMarketEnrichTimeout time.Duration
+
+	// MarketMissTTL is how long a token the provider has no data for stays
+	// suppressed. It is deliberately independent of the market TTLs above,
+	// which answer the different question of how stale a price may be.
+	MarketMissTTL time.Duration
 }
 
 // Load reads configuration from the process environment.
@@ -167,6 +172,10 @@ func loadFrom(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	cfg.TokenMarketEnrichTimeout, err = positiveSeconds(getenv, "TOKEN_MARKET_ENRICH_TIMEOUT_SECONDS", 5)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.MarketMissTTL, err = positiveSeconds(getenv, "MARKET_MISS_TTL_SECONDS", 7200)
 	if err != nil {
 		return Config{}, err
 	}

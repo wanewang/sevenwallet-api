@@ -8,6 +8,7 @@ import (
 
 	"wallet-api/internal/alchemy"
 	"wallet-api/internal/lifi"
+	"wallet-api/internal/ptr"
 )
 
 // Service orchestrates cache-first reads over Alchemy + Postgres.
@@ -88,7 +89,7 @@ func (s *Service) GetTokenMarkets(ctx context.Context, address string) (*TokenMa
 	}
 	for i, token := range filtered.Tokens {
 		out.Tokens[i] = TokenMarket{
-			TokenAddress: cloneStringPtr(token.TokenAddress), Symbol: token.Symbol,
+			TokenAddress: ptr.Clone(token.TokenAddress), Symbol: token.Symbol,
 			Name: token.Name, Decimals: token.Decimals, Balance: token.Balance,
 		}
 		if i < len(pairs) {
@@ -299,11 +300,3 @@ func (s *Service) filterTransfers(page *TransactionPage) *TransactionPage {
 }
 
 func strptr(s string) *string { return &s }
-
-func cloneStringPtr(value *string) *string {
-	if value == nil {
-		return nil
-	}
-	copy := *value
-	return &copy
-}

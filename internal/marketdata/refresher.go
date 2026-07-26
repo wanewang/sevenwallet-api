@@ -7,9 +7,8 @@ import (
 	"time"
 
 	"wallet-api/internal/coingecko"
+	"wallet-api/internal/marketcatalog"
 )
-
-const bootstrapFallbackTimeout = 5 * time.Second
 
 type CoinListClient interface {
 	ListCoins(context.Context) ([]coingecko.Coin, error)
@@ -36,67 +35,18 @@ func NewRefresher(client CoinListClient, store CatalogStore, holder *Holder, int
 // Bootstrap installs a fresh catalog when possible and otherwise falls back to
 // the last non-empty PostgreSQL snapshot without failing startup.
 func (r *Refresher) Bootstrap(ctx context.Context) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	mappings, err := r.fetch(ctx)
-	if err == nil {
-		if err := r.store.ReplaceCoinMappings(ctx, mappings); err == nil {
-			r.holder.Set(NewCatalog(mappings))
-			r.logf("marketdata: bootstrapped from CoinGecko (%d mappings)", len(mappings))
-			return
-		} else {
-			r.logf("marketdata: bootstrap persist failed: %v", err)
-		}
-	} else {
-		r.logf("marketdata: bootstrap fetch/build failed: %v", err)
-	}
-
-	// The fetch may have exhausted the caller's startup deadline. Give the
-	// durable fallback its own bounded attempt while retaining context values.
-	fallbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bootstrapFallbackTimeout)
-	defer cancel()
-	if mappings, ok, err := r.store.LoadCoinMappings(fallbackCtx); err != nil {
-		r.logf("marketdata: bootstrap postgres load failed: %v", err)
-	} else if ok && len(mappings) > 0 {
-		r.holder.Set(NewCatalog(mappings))
-		r.logf("marketdata: bootstrapped from postgres (%d mappings)", len(mappings))
-		return
-	} else {
-		r.logf("marketdata: no non-empty catalog source available")
-	}
-	r.logf("marketdata: bootstrap left catalog empty")
+	marketcatalog.Bootstrap[CoinMapping](ctx, r, "CoinGecko")
 }
 
 // Run refreshes the catalog on each tick until ctx is canceled.
 func (r *Refresher) Run(ctx context.Context) {
-	ticker := time.NewTicker(r.interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			r.refresh(ctx)
-		}
-	}
+	marketcatalog.Run[CoinMapping](ctx, r, r.interval)
 }
 
-func (r *Refresher) refresh(ctx context.Context) {
-	mappings, err := r.fetch(ctx)
-	if err != nil {
-		r.logf("marketdata: refresh failed, keeping prior catalog: %v", err)
-		return
-	}
-	if err := r.store.ReplaceCoinMappings(ctx, mappings); err != nil {
-		r.logf("marketdata: refresh persist failed, keeping prior catalog: %v", err)
-		return
-	}
-	r.holder.Set(NewCatalog(mappings))
-	r.logf("marketdata: refreshed catalog (%d mappings)", len(mappings))
-}
-
-func (r *Refresher) fetch(ctx context.Context) ([]CoinMapping, error) {
+// Fetch is the only genuinely CoinGecko-specific step: one call returns the
+// whole coin list. Bootstrap, fallback, and tick behaviour come from
+// marketcatalog.
+func (r *Refresher) Fetch(ctx context.Context) ([]CoinMapping, error) {
 	coins, err := r.client.ListCoins(ctx)
 	if err != nil {
 		return nil, err
@@ -107,3 +57,18 @@ func (r *Refresher) fetch(ctx context.Context) ([]CoinMapping, error) {
 	}
 	return mappings, nil
 }
+
+func (r *Refresher) Replace(ctx context.Context, mappings []CoinMapping) error {
+	return r.store.ReplaceCoinMappings(ctx, mappings)
+}
+
+func (r *Refresher) Load(ctx context.Context) ([]CoinMapping, bool, error) {
+	return r.store.LoadCoinMappings(ctx)
+}
+
+func (r *Refresher) Install(mappings []CoinMapping) { r.holder.Set(NewCatalog(mappings)) }
+
+func (r *Refresher) Logf(format string, args ...any) { r.logf("marketdata: "+format, args...) }
+
+// refresh performs a single refresh cycle.
+func (r *Refresher) refresh(ctx context.Context) { marketcatalog.Refresh[CoinMapping](ctx, r) }
