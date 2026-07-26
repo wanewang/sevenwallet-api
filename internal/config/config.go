@@ -32,6 +32,16 @@ type Config struct {
 	CoinGeckoMarketTTL     time.Duration
 	CoinGeckoEnrichTimeout time.Duration
 	CoinGeckoNativeIDs     []string
+
+	CoinMarketCapBaseURL     string
+	CoinMarketCapListRefresh time.Duration
+	CoinMarketCapMarketTTL   time.Duration
+	TokenMarketEnrichTimeout time.Duration
+
+	// MarketMissTTL is how long a token the provider has no data for stays
+	// suppressed. It is deliberately independent of the market TTLs above,
+	// which answer the different question of how stale a price may be.
+	MarketMissTTL time.Duration
 }
 
 // Load reads configuration from the process environment.
@@ -148,6 +158,26 @@ func loadFrom(getenv func(string) string) (Config, error) {
 	cfg.CoinGeckoNativeIDs = uniqueCSV(nativeIDs)
 	if len(cfg.CoinGeckoNativeIDs) == 0 {
 		return Config{}, fmt.Errorf("COINGECKO_NATIVE_IDS must contain at least one ID")
+	}
+	cfg.CoinMarketCapBaseURL = getenv("COINMARKETCAP_BASE_URL")
+	if cfg.CoinMarketCapBaseURL == "" {
+		cfg.CoinMarketCapBaseURL = "https://pro-api.coinmarketcap.com/public-api"
+	}
+	cfg.CoinMarketCapListRefresh, err = positiveSeconds(getenv, "COINMARKETCAP_LIST_REFRESH_SECONDS", 21600)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.CoinMarketCapMarketTTL, err = positiveSeconds(getenv, "COINMARKETCAP_MARKET_TTL_SECONDS", 1800)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.TokenMarketEnrichTimeout, err = positiveSeconds(getenv, "TOKEN_MARKET_ENRICH_TIMEOUT_SECONDS", 5)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.MarketMissTTL, err = positiveSeconds(getenv, "MARKET_MISS_TTL_SECONDS", 7200)
+	if err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
 }

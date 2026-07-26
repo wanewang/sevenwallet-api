@@ -39,7 +39,6 @@ temp/
 .superpowers
 .claude
 .codex
-openspec
 
 # Docker and local tooling overrides
 docker-compose.override.yml

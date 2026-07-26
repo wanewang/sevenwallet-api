@@ -14,6 +14,7 @@ var (
 	ErrUpstream               = errors.New("upstream provider error")
 	ErrStore                  = errors.New("storage error")
 	ErrNativeTokenUnavailable = errors.New("native token data unavailable")
+	ErrWalletNotCached        = errors.New("wallet token cache not found")
 )
 
 // Price is a single currency price for a token.
@@ -47,6 +48,45 @@ type TokenPortfolio struct {
 	Network   string    `json:"network"`
 	FetchedAt time.Time `json:"fetchedAt"`
 	Tokens    []Token   `json:"tokens"`
+}
+
+// CoinGeckoMarket is fresh CoinGecko comparison data for one token.
+type CoinGeckoMarket struct {
+	ID               string   `json:"id"`
+	PriceUSD         *string  `json:"priceUSD" extensions:"x-nullable"`
+	Change24HPercent *float64 `json:"change24hPercent" extensions:"x-nullable"`
+}
+
+// CoinMarketCapMarket is fresh CoinMarketCap comparison data for one token.
+type CoinMarketCapMarket struct {
+	ID               int64    `json:"id"`
+	PriceUSD         *string  `json:"priceUSD" extensions:"x-nullable"`
+	Change24HPercent *float64 `json:"change24hPercent" extensions:"x-nullable"`
+}
+
+// TokenMarket contains cached wallet identity/balance plus provider comparisons.
+type TokenMarket struct {
+	TokenAddress *string              `json:"tokenAddress" extensions:"x-nullable"`
+	Symbol       string               `json:"symbol"`
+	Name         string               `json:"name"`
+	Decimals     int                  `json:"decimals"`
+	Balance      string               `json:"balance"`
+	CG           *CoinGeckoMarket     `json:"cg" extensions:"x-nullable"`
+	CMC          *CoinMarketCapMarket `json:"cmc" extensions:"x-nullable"`
+}
+
+// TokenMarketPortfolio is the cache-only dual-provider response.
+type TokenMarketPortfolio struct {
+	Wallet             string        `json:"wallet"`
+	Network            string        `json:"network"`
+	PortfolioFetchedAt time.Time     `json:"portfolioFetchedAt"`
+	Tokens             []TokenMarket `json:"tokens"`
+}
+
+// MarketPair aligns provider results with one input Token by slice index.
+type MarketPair struct {
+	CG  *CoinGeckoMarket
+	CMC *CoinMarketCapMarket
 }
 
 // Transfer is a single asset transfer returned to API clients.
@@ -94,6 +134,11 @@ type MarketEnricher interface {
 	EnrichTokens(ctx context.Context, tokens []Token) []Token
 }
 
+// MarketComparator returns provider-specific fresh data aligned to input tokens.
+type MarketComparator interface {
+	Compare(ctx context.Context, tokens []Token) []MarketPair
+}
+
 // AlchemyClient is the subset of the Alchemy client the service depends on.
 type AlchemyClient interface {
 	GetTokens(ctx context.Context, address, network string) ([]alchemy.Token, error)
@@ -103,6 +148,7 @@ type AlchemyClient interface {
 // TokenStore persists the newest token snapshot per address.
 type TokenStore interface {
 	GetFreshTokens(ctx context.Context, address, network string, ttl time.Duration) (*TokenPortfolio, bool, error)
+	GetLatestTokens(ctx context.Context, address, network string) (*TokenPortfolio, bool, error)
 	SaveTokens(ctx context.Context, p *TokenPortfolio) error
 }
 

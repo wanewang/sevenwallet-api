@@ -5,6 +5,28 @@ definitions:
       error:
         type: string
     type: object
+  wallet-api_internal_wallet.CoinGeckoMarket:
+    properties:
+      change24hPercent:
+        type: number
+        x-nullable: true
+      id:
+        type: string
+      priceUSD:
+        type: string
+        x-nullable: true
+    type: object
+  wallet-api_internal_wallet.CoinMarketCapMarket:
+    properties:
+      change24hPercent:
+        type: number
+        x-nullable: true
+      id:
+        type: integer
+      priceUSD:
+        type: string
+        x-nullable: true
+    type: object
   wallet-api_internal_wallet.Price:
     properties:
       currency:
@@ -47,6 +69,41 @@ definitions:
       symbol:
         type: string
       tokenAddress:
+        type: string
+    type: object
+  wallet-api_internal_wallet.TokenMarket:
+    properties:
+      balance:
+        type: string
+      cg:
+        allOf:
+        - $ref: '#/definitions/wallet-api_internal_wallet.CoinGeckoMarket'
+        x-nullable: true
+      cmc:
+        allOf:
+        - $ref: '#/definitions/wallet-api_internal_wallet.CoinMarketCapMarket'
+        x-nullable: true
+      decimals:
+        type: integer
+      name:
+        type: string
+      symbol:
+        type: string
+      tokenAddress:
+        type: string
+        x-nullable: true
+    type: object
+  wallet-api_internal_wallet.TokenMarketPortfolio:
+    properties:
+      network:
+        type: string
+      portfolioFetchedAt:
+        type: string
+      tokens:
+        items:
+          $ref: '#/definitions/wallet-api_internal_wallet.TokenMarket'
+        type: array
+      wallet:
         type: string
     type: object
   wallet-api_internal_wallet.TokenPortfolio:
@@ -199,6 +256,39 @@ paths:
           schema:
             $ref: '#/definitions/internal_api.ErrorResponse'
       summary: Native tokens
+      tags:
+      - tokens
+  /tokens/{address}:
+    get:
+      description: Loads the latest locally cached wallet portfolio, applies normal
+        token filtering, and returns fresh CoinGecko and CoinMarketCap data when available.
+        Never refreshes holdings from Alchemy.
+      parameters:
+      - description: 0x-prefixed 20-byte wallet address
+        in: path
+        name: address
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/wallet-api_internal_wallet.TokenMarketPortfolio'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      summary: Cached wallet token markets
       tags:
       - tokens
 swagger: "2.0"

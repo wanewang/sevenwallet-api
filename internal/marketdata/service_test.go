@@ -110,7 +110,7 @@ func newServiceForTest(t *testing.T, cache *fakeMarketCache, store *fakeMarketSt
 	t.Helper()
 	holder := &Holder{}
 	holder.Set(NewCatalog(mappings))
-	service := NewService(client, cache, store, holder, "ethereum", nativeIDs, 30*time.Minute, time.Second)
+	service := NewService(client, cache, store, nil, holder, "ethereum", nativeIDs, 30*time.Minute, 2*time.Hour, time.Second)
 	service.now = func() time.Time { return now }
 	service.logf = func(string, ...any) {}
 	return service
@@ -415,6 +415,209 @@ func TestEnrichRedisReadErrorFallsThroughToPostgres(t *testing.T) {
 
 	if len(store.loadKeys) != 1 || got[0].PriceUSD == nil || *got[0].PriceUSD != "10" || len(client.batches) != 0 {
 		t.Fatalf("Redis fallback failed: store=%v token=%#v client=%v", store.loadKeys, got[0], client.batches)
+	}
+}
+
+func TestLookupFreshReturnsAlignedProviderDataWithoutMutatingTokens(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	key := ContractKey("ethereum", "0xA0B8")
+	priceUSD := "1.0001"
+	change := -0.25
+	cache := &fakeMarketCache{loads: []map[Key]Record{{
+		key: record(key, "usd-coin", now.Add(-time.Minute), &priceUSD, &change, nil, nil),
+	}}}
+	service := newServiceForTest(t, cache, &fakeMarketStore{}, &fakePriceClient{}, []CoinMapping{contractMapping("usd-coin", "0xA0B8")}, nil, now)
+	tokens := []wallet.Token{contractToken("0xA0B8", "USDC"), contractToken("0xdead", "NONE")}
+	original := *tokens[0].PriceUSD
+
+	got := service.LookupFresh(context.Background(), tokens)
+
+	if len(got) != 2 || got[0] == nil || got[0].ID != "usd-coin" || got[0].PriceUSD == nil || *got[0].PriceUSD != priceUSD || got[1] != nil {
+		t.Fatalf("results = %#v", got)
+	}
+	if *tokens[0].PriceUSD != original {
+		t.Fatalf("input token mutated: %#v", tokens[0])
+	}
+	if len(service.store.(*fakeMarketStore).loadKeys) != 0 || len(service.client.(*fakePriceClient).batches) != 0 {
+		t.Fatal("fresh Redis hit called downstream")
+	}
+}
+
+func TestLookupFreshDoesNotUseExpiredFallbackAndPersistsNewData(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	key := ContractKey("ethereum", "0xA0B8")
+	oldPrice := "999"
+	cache := &fakeMarketCache{loads: []map[Key]Record{{
+		key: record(key, "usd-coin", now.Add(-time.Hour), &oldPrice, floatPtr(9), nil, nil),
+	}}}
+	store := &fakeMarketStore{loads: []map[Key]Record{{}}}
+	client := &fakePriceClient{responses: []map[string]coingecko.SimplePrice{{
+		"usd-coin": simplePrice("1.5", "2.5", "3", 1784781600),
+	}}}
+	service := newServiceForTest(t, cache, store, client, []CoinMapping{contractMapping("usd-coin", "0xA0B8")}, nil, now)
+
+	got := service.LookupFresh(context.Background(), []wallet.Token{contractToken("0xA0B8", "USDC")})
+
+	if got[0] == nil || got[0].PriceUSD == nil || *got[0].PriceUSD != "1.5" || got[0].Change24HPercent == nil || *got[0].Change24HPercent != 2.5 {
+		t.Fatalf("result = %#v", got[0])
+	}
+	if len(store.saves) != 1 || len(cache.saves) != 1 {
+		t.Fatalf("persistence store=%#v cache=%#v", store.saves, cache.saves)
+	}
+}
+
+// A CoinGecko payload with neither a price nor a 24h change used to be written
+// to Postgres and Redis and marked complete, so the key served `null` for the
+// whole TTL. It must now be dropped: nothing persisted, nothing applied.
+func TestLookupFreshDiscardsAllNullPayloadWithoutPersisting(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	cache := &fakeMarketCache{loads: []map[Key]Record{{}}}
+	store := &fakeMarketStore{loads: []map[Key]Record{{}}}
+	client := &fakePriceClient{responses: []map[string]coingecko.SimplePrice{{
+		"usd-coin": {}, // provider answered, but with no price and no change
+	}}}
+	service := newServiceForTest(t, cache, store, client, []CoinMapping{contractMapping("usd-coin", "0xA0B8")}, nil, now)
+
+	got := service.LookupFresh(context.Background(), []wallet.Token{contractToken("0xA0B8", "USDC")})
+
+	if got[0] != nil {
+		t.Fatalf("all-null payload occupied a result slot: %#v", got[0])
+	}
+	if len(store.saves) != 0 {
+		t.Errorf("all-null payload written to postgres: %#v", store.saves)
+	}
+	if len(cache.saves) != 0 {
+		t.Errorf("all-null payload written to redis: %#v", cache.saves)
+	}
+}
+
+// statefulCache actually retains what is written to it, unlike fakeMarketCache
+// which replays a preset queue. The cached-null defect is only observable
+// across two lookups against a cache that remembers the first one.
+type statefulCache struct {
+	mu      sync.Mutex
+	records map[Key]Record
+}
+
+func (c *statefulCache) LoadMarketData(_ context.Context, keys []Key) (map[Key]Record, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[Key]Record, len(keys))
+	for _, key := range keys {
+		if record, ok := c.records[key]; ok {
+			out[key] = record
+		}
+	}
+	return out, nil
+}
+
+func (c *statefulCache) SaveMarketData(_ context.Context, writes []CacheWrite) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.records == nil {
+		c.records = map[Key]Record{}
+	}
+	for _, w := range writes {
+		c.records[w.Record.Key] = w.Record
+	}
+	return nil
+}
+
+// Because nothing was persisted above, the key stays eligible: a later lookup
+// asks the provider again instead of serving a cached null for the whole TTL.
+func TestLookupFreshRetriesProviderAfterAllNullPayload(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	cache := &statefulCache{}
+	client := &fakePriceClient{responses: []map[string]coingecko.SimplePrice{
+		{"usd-coin": {}},
+		{"usd-coin": simplePrice("1.5", "2.5", "3", 1784781600)},
+	}}
+	holder := &Holder{}
+	holder.Set(NewCatalog([]CoinMapping{contractMapping("usd-coin", "0xA0B8")}))
+	service := NewService(client, cache, nil, nil, holder, "ethereum", nil, 30*time.Minute, 2*time.Hour, time.Second)
+	service.now = func() time.Time { return now }
+	service.logf = func(string, ...any) {}
+	tokens := []wallet.Token{contractToken("0xA0B8", "USDC")}
+
+	if got := service.LookupFresh(context.Background(), tokens); got[0] != nil {
+		t.Fatalf("first lookup = %#v, want nil", got[0])
+	}
+	// The clock does not move: any cached null would still be inside its TTL.
+	got := service.LookupFresh(context.Background(), tokens)
+
+	if len(client.batches) != 2 {
+		t.Fatalf("provider called %d times, want 2 (a null must not be cached)", len(client.batches))
+	}
+	if got[0] == nil || got[0].PriceUSD == nil || *got[0].PriceUSD != "1.5" {
+		t.Fatalf("second lookup = %#v, want the newly available price", got[0])
+	}
+}
+
+// A record carrying only one of the two fields is still real data.
+func TestLookupFreshKeepsPartialPayloads(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	priceOnly := json.Number("1.5")
+	changeOnly := json.Number("2.5")
+
+	tests := []struct {
+		name       string
+		price      coingecko.SimplePrice
+		wantPrice  *string
+		wantChange *float64
+	}{
+		{"price without change", coingecko.SimplePrice{USD: &priceOnly}, stringPtr("1.5"), nil},
+		{"change without price", coingecko.SimplePrice{USD24HChange: &changeOnly}, nil, floatPtr(2.5)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := &fakeMarketCache{loads: []map[Key]Record{{}}}
+			store := &fakeMarketStore{loads: []map[Key]Record{{}}}
+			client := &fakePriceClient{responses: []map[string]coingecko.SimplePrice{{"usd-coin": tc.price}}}
+			service := newServiceForTest(t, cache, store, client, []CoinMapping{contractMapping("usd-coin", "0xA0B8")}, nil, now)
+
+			got := service.LookupFresh(context.Background(), []wallet.Token{contractToken("0xA0B8", "USDC")})
+
+			if got[0] == nil {
+				t.Fatalf("partial payload was discarded")
+			}
+			if !reflect.DeepEqual(got[0].PriceUSD, tc.wantPrice) {
+				t.Errorf("PriceUSD = %v, want %v", got[0].PriceUSD, tc.wantPrice)
+			}
+			if !reflect.DeepEqual(got[0].Change24HPercent, tc.wantChange) {
+				t.Errorf("Change24HPercent = %v, want %v", got[0].Change24HPercent, tc.wantChange)
+			}
+			if len(store.saves) != 1 || len(cache.saves) != 1 {
+				t.Errorf("partial payload not persisted: store=%#v cache=%#v", store.saves, cache.saves)
+			}
+		})
+	}
+}
+
+func TestLookupFreshReturnsNilWhenOnlyDataIsExpired(t *testing.T) {
+	now := time.Now().UTC()
+	key := ContractKey("ethereum", "0xA0B8")
+	oldPrice := "999"
+	cache := &fakeMarketCache{loads: []map[Key]Record{{
+		key: record(key, "usd-coin", now.Add(-time.Hour), &oldPrice, floatPtr(9), nil, nil),
+	}}}
+	client := &fakePriceClient{errors: []error{errors.New("unavailable")}}
+	service := newServiceForTest(t, cache, &fakeMarketStore{}, client, []CoinMapping{contractMapping("usd-coin", "0xA0B8")}, nil, now)
+	if got := service.LookupFresh(context.Background(), []wallet.Token{contractToken("0xA0B8", "USDC")}); got[0] != nil {
+		t.Fatalf("expired fallback returned: %#v", got[0])
+	}
+}
+
+func TestLookupFreshUnresolvedContractLogIdentifiesCoinGecko(t *testing.T) {
+	now := time.Now().UTC()
+	service := newServiceForTest(t, &fakeMarketCache{}, &fakeMarketStore{}, &fakePriceClient{}, nil, nil, now)
+	var logs []string
+	service.logf = func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
+
+	service.LookupFresh(context.Background(), []wallet.Token{contractToken("0xDeAd", "NONE")})
+
+	if len(logs) != 1 || !strings.Contains(logs[0], `source=cg chain="ethereum" address="0xdead"`) {
+		t.Fatalf("logs = %#v", logs)
 	}
 }
 

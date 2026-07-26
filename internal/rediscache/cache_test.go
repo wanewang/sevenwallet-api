@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"wallet-api/internal/cmcmarket"
 	"wallet-api/internal/lifi"
 	"wallet-api/internal/marketdata"
 	"wallet-api/internal/tokenvalidity"
@@ -28,6 +29,20 @@ func newTestCache(t *testing.T) *Cache {
 	_, _ = c.client.Del(ctx, key("ETH")).Result()
 	t.Cleanup(func() { _ = c.Close() })
 	return c
+}
+
+func deleteCMCMarketKeys(t *testing.T, c *Cache, keys ...marketdata.Key) {
+	t.Helper()
+	redisKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
+		redisKeys = append(redisKeys, cmcMarketKey(key))
+	}
+	if len(redisKeys) > 0 {
+		if err := c.client.Del(context.Background(), redisKeys...).Err(); err != nil {
+			t.Fatalf("delete CMC keys: %v", err)
+		}
+		t.Cleanup(func() { _ = c.client.Del(context.Background(), redisKeys...).Err() })
+	}
 }
 
 func deleteMarketKeys(t *testing.T, c *Cache, keys ...marketdata.Key) {
@@ -311,5 +326,48 @@ func TestMarketDataMalformedSameKeyEnvelopesAreReplaceable(t *testing.T) {
 				t.Fatalf("replacement = %#v", got[key])
 			}
 		})
+	}
+}
+
+func TestDecodeCMCMarketPayload(t *testing.T) {
+	key := marketdata.ContractKey("ethereum", "0xA0B8")
+	valid := []byte(`{"chain":"ethereum","tokenKey":"0xa0b8","coinMarketCapID":1660,"fetchedAt":"2023-11-14T22:13:20.123456789Z","fetchedAtUnixNano":"1700000000123456789"}`)
+	if got, ok := decodeCMCMarketPayload(valid, key); !ok || got.CoinMarketCapID != 1660 || got.Key != key {
+		t.Fatalf("valid CMC payload = %#v ok=%v", got, ok)
+	}
+	for _, raw := range []string{`null`, `{}`, `{"chain":"ethereum","tokenKey":"0xa0b8","coinMarketCapID":0}`, `{"chain":"ethereum","tokenKey":"0xdead","coinMarketCapID":1660,"fetchedAt":"2023-11-14T22:13:20.123456789Z","fetchedAtUnixNano":"1700000000123456789"}`} {
+		if _, ok := decodeCMCMarketPayload([]byte(raw), key); ok {
+			t.Fatalf("accepted malformed CMC payload %s", raw)
+		}
+	}
+}
+
+func TestCoinMarketCapMarketRoundTripTTLAndOlderGuard(t *testing.T) {
+	c := newTestCache(t)
+	ctx := context.Background()
+	key := marketdata.ContractKey("ethereum", "0xA0B8")
+	deleteMarketKeys(t, c, key)
+	deleteCMCMarketKeys(t, c, key)
+	price := "1e-400"
+	newer := cmcmarket.Record{Key: key, CoinMarketCapID: 1660, PriceUSD: &price, FetchedAt: time.Unix(2_000, 0).UTC()}
+	if err := c.SaveCoinMarketCapMarketData(ctx, []cmcmarket.CacheWrite{{Record: newer, TTL: 10 * time.Minute}}); err != nil {
+		t.Fatalf("save newer: %v", err)
+	}
+	if exists, err := c.client.Exists(ctx, marketKey(key)).Result(); err != nil || exists != 0 {
+		t.Fatalf("CMC write collided with CG namespace: exists=%d err=%v", exists, err)
+	}
+	before, _ := c.client.TTL(ctx, cmcMarketKey(key)).Result()
+	oldPrice := "9"
+	older := cmcmarket.Record{Key: key, CoinMarketCapID: 9, PriceUSD: &oldPrice, FetchedAt: time.Unix(1_000, 0).UTC()}
+	if err := c.SaveCoinMarketCapMarketData(ctx, []cmcmarket.CacheWrite{{Record: older, TTL: time.Hour}}); err != nil {
+		t.Fatalf("save older: %v", err)
+	}
+	after, _ := c.client.TTL(ctx, cmcMarketKey(key)).Result()
+	got, err := c.LoadCoinMarketCapMarketData(ctx, []marketdata.Key{key})
+	if err != nil || got[key].CoinMarketCapID != 1660 || got[key].PriceUSD == nil || *got[key].PriceUSD != price {
+		t.Fatalf("load = %#v err=%v", got, err)
+	}
+	if after > before+time.Second {
+		t.Fatalf("older write extended TTL from %v to %v", before, after)
 	}
 }

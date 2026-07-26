@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"wallet-api/internal/cmcmarket"
 	"wallet-api/internal/lifi"
 	"wallet-api/internal/marketdata"
 	"wallet-api/internal/tokenvalidity"
@@ -33,7 +34,7 @@ func newTestStore(t *testing.T) *Postgres {
 		t.Fatalf("Migrate: %v", err)
 	}
 	// Clean slate.
-	_, _ = s.pool.Exec(ctx, "TRUNCATE wallet_tokens, token_fetch_meta, tx_cache, lifi_token_lists, token_metadata, coingecko_coin_mappings, coingecko_market_data")
+	_, _ = s.pool.Exec(ctx, "TRUNCATE wallet_tokens, token_fetch_meta, tx_cache, lifi_token_lists, token_metadata, coingecko_coin_mappings, coingecko_market_data, coinmarketcap_coin_mappings, coinmarketcap_market_data")
 	t.Cleanup(s.Close)
 	return s
 }
@@ -47,6 +48,15 @@ func TestSchemaStoresMarketPriceUSDAsText(t *testing.T) {
 	}
 	if !strings.Contains(normalized, "ALTER COLUMN price_usd TYPE TEXT USING price_usd::text") {
 		t.Fatal("schema does not migrate an existing numeric price_usd column to TEXT")
+	}
+}
+
+func TestSchemaKeepsCoinMarketCapStorageSeparate(t *testing.T) {
+	normalized := strings.Join(strings.Fields(schemaSQL), " ")
+	for _, fragment := range []string{"CREATE TABLE IF NOT EXISTS coinmarketcap_coin_mappings", "CREATE TABLE IF NOT EXISTS coinmarketcap_market_data", "coinmarketcap_id BIGINT", "price_usd TEXT"} {
+		if !strings.Contains(normalized, fragment) {
+			t.Errorf("schema missing %q", fragment)
+		}
 	}
 }
 
@@ -150,6 +160,29 @@ func TestGetFreshTokensExpired(t *testing.T) {
 	}
 	if _, ok, _ := s.GetFreshTokens(ctx, "0xabc", "eth-mainnet", time.Minute); ok {
 		t.Error("expected stale snapshot to be reported not-fresh")
+	}
+}
+
+func TestGetLatestTokensReturnsExpiredAndDistinguishesEmptyFromMissing(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	fetchedAt := time.Now().Add(-time.Hour).UTC().Truncate(time.Microsecond)
+	p := &wallet.TokenPortfolio{Address: "0xabc", Network: "eth-mainnet", FetchedAt: fetchedAt}
+	if err := s.SaveTokens(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.GetLatestTokens(ctx, "0xABC", "eth-mainnet")
+	if err != nil || !ok {
+		t.Fatalf("GetLatestTokens ok=%v err=%v", ok, err)
+	}
+	// Compare instants, not structs: == on time.Time also compares the location
+	// pointer, and the driver returns time.Local where the fixture used UTC, so
+	// == can never hold here however the host clock is configured.
+	if !got.FetchedAt.Equal(fetchedAt) || got.Tokens == nil || len(got.Tokens) != 0 {
+		t.Fatalf("portfolio = %#v", got)
+	}
+	if _, ok, err := s.GetLatestTokens(ctx, "0xmissing", "eth-mainnet"); err != nil || ok {
+		t.Fatalf("missing wallet ok=%v err=%v", ok, err)
 	}
 }
 
@@ -462,5 +495,54 @@ func TestMarketDataOlderPostgresWriteCannotReplaceNewerRecord(t *testing.T) {
 	}
 	if got[key].CoinGeckoID != "newer" || got[key].PriceUSD == nil || *got[key].PriceUSD != newPrice {
 		t.Fatalf("older write replaced newer record: %#v", got[key])
+	}
+}
+
+func TestCoinMarketCapMappingsReplaceRoundTripAndRollback(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	at := time.Now().UTC().Truncate(time.Second)
+	original := []cmcmarket.CoinMapping{{ID: 1660, Name: "Monolith", Symbol: "TKN", PlatformID: 1, Address: "0xaaaf", FetchedAt: at}}
+	if err := s.ReplaceCoinMarketCapMappings(ctx, original); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	got, ok, err := s.LoadCoinMarketCapMappings(ctx)
+	if err != nil || !ok || !reflect.DeepEqual(got, original) {
+		t.Fatalf("load ok=%v err=%v got=%#v", ok, err, got)
+	}
+	duplicate := []cmcmarket.CoinMapping{
+		{ID: 2, PlatformID: 1, Address: "0xdup", FetchedAt: at},
+		{ID: 2, PlatformID: 1, Address: "0xdup", FetchedAt: at},
+	}
+	if err := s.ReplaceCoinMarketCapMappings(ctx, duplicate); err == nil {
+		t.Fatal("expected duplicate replacement error")
+	}
+	got, ok, err = s.LoadCoinMarketCapMappings(ctx)
+	if err != nil || !ok || !reflect.DeepEqual(got, original) {
+		t.Fatalf("rollback load ok=%v err=%v got=%#v", ok, err, got)
+	}
+}
+
+func TestCoinMarketCapMarketRoundTripAndOlderWriteGuard(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	key := marketdata.ContractKey("ethereum", "0xAaAf")
+	price := "1e-400"
+	change := 2.5
+	newer := cmcmarket.Record{Key: key, CoinMarketCapID: 1660, PriceUSD: &price, Change24H: &change, FetchedAt: time.Unix(2_000, 0).UTC()}
+	if err := s.SaveCoinMarketCapMarketData(ctx, []cmcmarket.Record{newer}); err != nil {
+		t.Fatalf("save newer: %v", err)
+	}
+	oldPrice := "9"
+	older := cmcmarket.Record{Key: key, CoinMarketCapID: 9, PriceUSD: &oldPrice, FetchedAt: time.Unix(1_000, 0).UTC()}
+	if err := s.SaveCoinMarketCapMarketData(ctx, []cmcmarket.Record{older}); err != nil {
+		t.Fatalf("save older: %v", err)
+	}
+	got, err := s.LoadCoinMarketCapMarketData(ctx, []marketdata.Key{key, marketdata.ContractKey("ethereum", "0xmissing")})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(got) != 1 || got[key].CoinMarketCapID != 1660 || got[key].PriceUSD == nil || *got[key].PriceUSD != price || got[key].Change24H == nil || *got[key].Change24H != change {
+		t.Fatalf("record = %#v", got[key])
 	}
 }
