@@ -314,3 +314,43 @@ func TestLoadFromRejectsBadMoralisRecheck(t *testing.T) {
 		t.Fatal("expected error for non-positive MORALIS_RECHECK_SECONDS")
 	}
 }
+
+func TestLoadFromMarketMissTTL(t *testing.T) {
+	t.Run("defaults to two hours, independent of the market TTL", func(t *testing.T) {
+		env := coinGeckoTestEnv()
+		cfg, err := loadFrom(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatalf("loadFrom: %v", err)
+		}
+		if cfg.MarketMissTTL != 2*time.Hour {
+			t.Errorf("MarketMissTTL = %v, want 2h", cfg.MarketMissTTL)
+		}
+		// The miss TTL answers a different question from the market TTL and
+		// must not track it.
+		if cfg.MarketMissTTL == cfg.CoinGeckoMarketTTL || cfg.MarketMissTTL == cfg.CoinMarketCapMarketTTL {
+			t.Errorf("miss TTL (%v) must not equal the market TTLs (%v)", cfg.MarketMissTTL, cfg.CoinGeckoMarketTTL)
+		}
+	})
+
+	t.Run("honours the override", func(t *testing.T) {
+		env := coinGeckoTestEnv()
+		env["MARKET_MISS_TTL_SECONDS"] = "600"
+		cfg, err := loadFrom(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatalf("loadFrom: %v", err)
+		}
+		if cfg.MarketMissTTL != 10*time.Minute {
+			t.Errorf("MarketMissTTL = %v, want 10m", cfg.MarketMissTTL)
+		}
+	})
+
+	t.Run("rejects a non-positive value", func(t *testing.T) {
+		env := coinGeckoTestEnv()
+		env["MARKET_MISS_TTL_SECONDS"] = "0"
+		if _, err := loadFrom(func(k string) string { return env[k] }); err == nil {
+			t.Fatal("loadFrom accepted MARKET_MISS_TTL_SECONDS=0")
+		} else if !strings.Contains(err.Error(), "MARKET_MISS_TTL_SECONDS") {
+			t.Errorf("error = %v, want it to name the variable", err)
+		}
+	})
+}

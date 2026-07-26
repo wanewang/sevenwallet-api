@@ -3,12 +3,12 @@ package cmcmarket
 import (
 	"time"
 
-	"wallet-api/internal/marketdata"
+	"wallet-api/internal/marketkey"
 )
 
 // Record is one shared CoinMarketCap market record.
 type Record struct {
-	marketdata.Key
+	marketkey.Key
 	CoinMarketCapID int64     `json:"coinMarketCapID"`
 	PriceUSD        *string   `json:"priceUSD"`
 	Change24H       *float64  `json:"change24hPercent"`
@@ -22,13 +22,9 @@ type CacheWrite struct {
 }
 
 func (r Record) RemainingTTL(now time.Time, ttl time.Duration) time.Duration {
-	remaining := ttl - now.Sub(r.FetchedAt)
-	if remaining <= 0 {
-		return 0
-	}
-	return remaining
+	return marketkey.RemainingTTL(r.FetchedAt, now, ttl)
 }
 
 func (r Record) Fresh(now time.Time, ttl time.Duration) bool {
-	return r.RemainingTTL(now, ttl) > 0
+	return marketkey.Fresh(r.FetchedAt, now, ttl)
 }

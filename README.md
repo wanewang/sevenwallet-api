@@ -83,6 +83,9 @@ Set via environment variables:
 | `COINMARKETCAP_LIST_REFRESH_SECONDS` | no | `21600` | Active CMC map refresh interval, 6 hours |
 | `COINMARKETCAP_MARKET_TTL_SECONDS` | no | `1800` | CMC market freshness, 30 minutes |
 | `TOKEN_MARKET_ENRICH_TIMEOUT_SECONDS` | no | `5` | Shared `cg`/`cmc` lookup budget for `/v1/tokens` |
+| `MARKET_MISS_TTL_SECONDS` | no | `7200` | How long a token a provider has no data for stays suppressed, 2 hours |
+
+`MARKET_MISS_TTL_SECONDS` governs the negative cache, which is deliberately separate from the market TTLs above. A market TTL answers "how stale may a price be"; the miss TTL answers "how long before we ask again about a token the provider had nothing for". Misses live in their own Redis namespaces (`coingecko:miss:*`, `cmc:miss:*`), hold no market data, and are never written to PostgreSQL. A fresh record from any tier always outranks a live miss, so a token the provider starts carrying is picked up as soon as data exists for it.
 
 Responses are filtered to the LI.FI token allowlist: tokens on the allowlist are enriched with `logoURI`, `coinKey`, and `priceUSD`. Unlisted ERC-20s are no longer simply hidden — they are checked against the Moralis API and kept (enriched with Moralis metadata) unless they are flagged as `possible_spam`; otherwise they are dropped. The allowlist is fetched at startup and refreshed hourly.
 

@@ -56,7 +56,11 @@ type cmcMarketPayload struct {
 	FetchedAtUnixNano string `json:"fetchedAtUnixNano"`
 }
 
-const marketCASLua = `
+// marketCASTemplate is the shared timestamp-CAS script. The single
+// --[[PAYLOAD_VALIDATION]] marker is where each provider's payload validation
+// goes, supplied by marketCASScript. Deriving one script from another script's
+// source text let a whitespace edit silently disarm the validation.
+const marketCASTemplate = `
 local function decimalParts(value)
   if type(value) ~= 'string' then
     return nil
@@ -393,12 +397,7 @@ local function validEnvelope(decoded, expectedChain, expectedToken)
   if decoded['chain'] ~= expectedChain or decoded['tokenKey'] ~= expectedToken then
     return false
   end
-  local required = {'chain', 'tokenKey', 'coingeckoID', 'fetchedAt', 'fetchedAtUnixNano'}
-  for _, field in ipairs(required) do
-    if type(decoded[field]) ~= 'string' or decoded[field] == '' then
-      return false
-    end
-  end
+--[[PAYLOAD_VALIDATION]]
   if not canonicalInt64(decoded['fetchedAtUnixNano']) then
     return false
   end
@@ -419,9 +418,36 @@ redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[3])
 return 1
 `
 
-var cmcMarketCASLua = strings.Replace(marketCASLua,
-	"local required = {'chain', 'tokenKey', 'coingeckoID', 'fetchedAt', 'fetchedAtUnixNano'}",
-	"local required = {'chain', 'tokenKey', 'fetchedAt', 'fetchedAtUnixNano'}\n  if type(decoded['coinMarketCapID']) ~= 'number' or decoded['coinMarketCapID'] <= 0 then\n    return false\n  end", 1)
+const casValidationMarker = "--[[PAYLOAD_VALIDATION]]"
+
+// marketCASScript builds one provider's CAS script from the shared template.
+// A missing marker panics at init rather than silently yielding a script with
+// no payload validation at all.
+func marketCASScript(validation string) string {
+	if !strings.Contains(marketCASTemplate, casValidationMarker) {
+		panic("rediscache: market CAS template lost its " + casValidationMarker + " marker")
+	}
+	return strings.Replace(marketCASTemplate, casValidationMarker, validation, 1)
+}
+
+var marketCASLua = marketCASScript(
+	`  local required = {'chain', 'tokenKey', 'coingeckoID', 'fetchedAt', 'fetchedAtUnixNano'}
+  for _, field in ipairs(required) do
+    if type(decoded[field]) ~= 'string' or decoded[field] == '' then
+      return false
+    end
+  end`)
+
+var cmcMarketCASLua = marketCASScript(
+	`  local required = {'chain', 'tokenKey', 'fetchedAt', 'fetchedAtUnixNano'}
+  if type(decoded['coinMarketCapID']) ~= 'number' or decoded['coinMarketCapID'] <= 0 then
+    return false
+  end
+  for _, field in ipairs(required) do
+    if type(decoded[field]) ~= 'string' or decoded[field] == '' then
+      return false
+    end
+  end`)
 
 // SaveTokenList writes the list with the configured safety TTL.
 func (c *Cache) SaveTokenList(ctx context.Context, chain string, tokens []lifi.ListToken, fetchedAt time.Time) error {

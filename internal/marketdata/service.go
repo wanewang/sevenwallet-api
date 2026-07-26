@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
-	"sort"
 	"strings"
 	"time"
 
 	"wallet-api/internal/coingecko"
+	"wallet-api/internal/marketkey"
+	"wallet-api/internal/marketpipeline"
+	"wallet-api/internal/ptr"
 	"wallet-api/internal/wallet"
 )
 
@@ -29,28 +31,36 @@ type MarketStore interface {
 	SaveMarketData(context.Context, []Record) error
 }
 
+// MissCache is the negative cache: tokens CoinGecko had no data for.
+type MissCache interface {
+	LoadCoinGeckoMisses(context.Context, []Key) (map[Key]struct{}, error)
+	SaveCoinGeckoMisses(context.Context, []Key, time.Duration) error
+}
+
 type Service struct {
 	client        PriceClient
 	cache         MarketCache
 	store         MarketStore
+	misses        MissCache
 	catalog       *Holder
 	platform      string
 	nativeIDs     map[string]struct{}
 	ttl           time.Duration
+	missTTL       time.Duration
 	enrichTimeout time.Duration
 	now           func() time.Time
 	logf          func(string, ...any)
 }
 
-func NewService(client PriceClient, cache MarketCache, store MarketStore, catalog *Holder, platform string, nativeIDs []string, ttl, enrichTimeout time.Duration) *Service {
+func NewService(client PriceClient, cache MarketCache, store MarketStore, misses MissCache, catalog *Holder, platform string, nativeIDs []string, ttl, missTTL, enrichTimeout time.Duration) *Service {
 	allowed := make(map[string]struct{}, len(nativeIDs))
 	for _, id := range nativeIDs {
 		allowed[id] = struct{}{}
 	}
 	return &Service{
-		client: client, cache: cache, store: store, catalog: catalog,
+		client: client, cache: cache, store: store, misses: misses, catalog: catalog,
 		platform: strings.ToLower(platform), nativeIDs: allowed,
-		ttl: ttl, enrichTimeout: enrichTimeout, now: time.Now, logf: log.Printf,
+		ttl: ttl, missTTL: missTTL, enrichTimeout: enrichTimeout, now: time.Now, logf: log.Printf,
 	}
 }
 
@@ -64,14 +74,13 @@ var _ wallet.MarketEnricher = (*Service)(nil)
 
 // LookupFresh returns CoinGecko comparison data aligned with tokens. It uses
 // the existing catalog and cache hierarchy, but deliberately never serves an
-// expired record and does not mutate the input token slice.
+// expired record and does not mutate the input token slice. The cascade itself
+// lives in marketpipeline; this method only resolves tokens to CoinGecko IDs
+// and supplies the CoinGecko-specific half.
 func (s *Service) LookupFresh(ctx context.Context, tokens []wallet.Token) []*wallet.CoinGeckoMarket {
 	result := make([]*wallet.CoinGeckoMarket, len(tokens))
 	if len(tokens) == 0 || s == nil || s.catalog == nil || s.catalog.Current() == nil {
 		return result
-	}
-	if ctx == nil {
-		ctx = context.Background()
 	}
 
 	resolved, expectedID, indexesByKey, keyOrder := s.resolve(s.catalog.Current(), tokens)
@@ -79,131 +88,141 @@ func (s *Service) LookupFresh(ctx context.Context, tokens []wallet.Token) []*wal
 		return result
 	}
 
-	now := s.now().UTC()
-	complete := make(map[Key]bool, len(keyOrder))
-	redisRecords := make(map[Key]Record)
-	if s.cache != nil {
-		loaded, err := s.cache.LoadMarketData(ctx, keyOrder)
-		if err != nil {
-			s.logf("marketdata: fresh CoinGecko redis load failed: %v", err)
-		} else {
-			redisRecords = loaded
-		}
-	}
-	for _, key := range keyOrder {
-		record, ok := matchingRecord(redisRecords, key, expectedID[key])
-		if !ok || !record.Fresh(now, s.ttl) {
-			continue
-		}
-		applyCoinGeckoResult(result, indexesByKey[key], record)
-		complete[key] = true
-	}
-
-	remaining := incompleteKeys(keyOrder, complete)
-	postgresRecords := make(map[Key]Record)
-	if s.store != nil && len(remaining) > 0 {
-		loaded, err := s.store.LoadMarketData(ctx, remaining)
-		if err != nil {
-			s.logf("marketdata: fresh CoinGecko postgres load failed: %v", err)
-		} else {
-			postgresRecords = loaded
-		}
-	}
-	promotions := make([]CacheWrite, 0, len(remaining))
-	for _, key := range remaining {
-		record, ok := matchingRecord(postgresRecords, key, expectedID[key])
-		if !ok || !record.Fresh(now, s.ttl) {
-			continue
-		}
-		applyCoinGeckoResult(result, indexesByKey[key], record)
-		complete[key] = true
-		if ttl := record.RemainingTTL(now, s.ttl); ttl > 0 {
-			promotions = append(promotions, CacheWrite{Record: record, TTL: ttl})
-		}
-	}
-	if len(promotions) > 0 && s.cache != nil {
-		if err := s.cache.SaveMarketData(ctx, promotions); err != nil {
-			s.logf("marketdata: fresh CoinGecko redis promotion failed: %v", err)
-		}
-	}
-
-	groups := make(map[string][]Key)
-	for _, key := range keyOrder {
-		if !complete[key] {
-			groups[expectedID[key]] = append(groups[expectedID[key]], key)
-		}
-	}
-	ids := make([]string, 0, len(groups))
-	for id := range groups {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for start := 0; start < len(ids); start += priceBatchSize {
-		if ctx.Err() != nil {
-			break
-		}
-		end := start + priceBatchSize
-		if end > len(ids) {
-			end = len(ids)
-		}
-		batchIDs := ids[start:end]
-		prices, err := s.clientPrices(ctx, batchIDs)
-		if err != nil {
-			s.logf("marketdata: fresh CoinGecko price batch failed for %d IDs: %v", len(batchIDs), err)
-			if ctx.Err() != nil {
-				break
-			}
-			continue
-		}
-
-		fetchedAt := s.now().UTC()
-		fetched := make([]Record, 0)
-		for _, id := range batchIDs {
-			price, ok := prices[id]
-			if !ok {
-				continue
-			}
-			for _, key := range groups[id] {
-				record := s.recordFromPrice(key, id, price, fetchedAt)
-				applyCoinGeckoResult(result, indexesByKey[key], record)
-				complete[key] = true
-				fetched = append(fetched, record)
-			}
-		}
-		if len(fetched) == 0 {
-			continue
-		}
-		if s.store != nil {
-			if err := s.store.SaveMarketData(ctx, fetched); err != nil {
-				s.logf("marketdata: fresh CoinGecko postgres save failed: %v", err)
-			}
-		}
-		if s.cache != nil {
-			writes := make([]CacheWrite, len(fetched))
-			for i, record := range fetched {
-				writes[i] = CacheWrite{Record: record, TTL: s.ttl}
-			}
-			if err := s.cache.SaveMarketData(ctx, writes); err != nil {
-				s.logf("marketdata: fresh CoinGecko redis save failed: %v", err)
-			}
-		}
-	}
+	marketpipeline.Run[string, Record](
+		ctx,
+		&lookupProvider{service: s, result: result},
+		marketpipeline.Request[string]{
+			KeyOrder:     keyOrder,
+			ExpectedID:   expectedID,
+			IndexesByKey: indexesByKey,
+		},
+		marketpipeline.Options[Record]{},
+	)
 	return result
 }
 
-func applyCoinGeckoResult(result []*wallet.CoinGeckoMarket, indexes []int, record Record) {
-	if record.PriceUSD == nil && record.Change24HPercent == nil {
-		return
-	}
-	for _, index := range indexes {
-		result[index] = &wallet.CoinGeckoMarket{
-			ID:               record.CoinGeckoID,
-			PriceUSD:         cloneString(record.PriceUSD),
-			Change24HPercent: cloneFloat(record.Change24HPercent),
-		}
-	}
+// lookupProvider adapts Service to the shared cascade for the comparison route,
+// closing over the output slice so Apply can write into it.
+type lookupProvider struct {
+	service *Service
+	result  []*wallet.CoinGeckoMarket
 }
 
+var _ marketpipeline.Provider[string, Record] = (*lookupProvider)(nil)
+
+func (p *lookupProvider) LoadCache(ctx context.Context, keys []marketkey.Key) (map[marketkey.Key]Record, error) {
+	if p.service.cache == nil {
+		return nil, nil
+	}
+	return p.service.cache.LoadMarketData(ctx, keys)
+}
+
+func (p *lookupProvider) SaveCache(ctx context.Context, writes []marketpipeline.Write[Record]) error {
+	if p.service.cache == nil {
+		return nil
+	}
+	return p.service.cache.SaveMarketData(ctx, toCacheWrites(writes))
+}
+
+func (p *lookupProvider) LoadStore(ctx context.Context, keys []marketkey.Key) (map[marketkey.Key]Record, error) {
+	if p.service.store == nil {
+		return nil, nil
+	}
+	return p.service.store.LoadMarketData(ctx, keys)
+}
+
+func (p *lookupProvider) SaveStore(ctx context.Context, records []Record) error {
+	if p.service.store == nil {
+		return nil
+	}
+	return p.service.store.SaveMarketData(ctx, records)
+}
+
+func (p *lookupProvider) Fetch(ctx context.Context, ids []string) (map[string]Record, error) {
+	return p.service.fetchRecords(ctx, ids)
+}
+
+func (p *lookupProvider) LoadMisses(ctx context.Context, keys []marketkey.Key) (map[marketkey.Key]struct{}, error) {
+	if p.service.misses == nil {
+		return nil, nil
+	}
+	return p.service.misses.LoadCoinGeckoMisses(ctx, keys)
+}
+
+func (p *lookupProvider) SaveMisses(ctx context.Context, keys []marketkey.Key, ttl time.Duration) error {
+	if p.service.misses == nil {
+		return nil
+	}
+	return p.service.misses.SaveCoinGeckoMisses(ctx, keys, ttl)
+}
+
+// HasData is broader than Apply on purpose. Apply asks whether the comparison
+// route can render the record; HasData asks whether CoinGecko returned anything
+// at all. A market-cap-only record fails Apply but has data, so it must not be
+// recorded as a miss — enrichment can still use it.
+func (p *lookupProvider) HasData(r Record) bool {
+	return r.PriceUSD != nil || r.Change24HPercent != nil || r.MarketCapUSD != nil || r.MarketDataUpdatedAt != nil
+}
+
+func (p *lookupProvider) MissTTL() time.Duration { return p.service.missTTL }
+
+func (p *lookupProvider) BatchLimit() int                          { return priceBatchSize }
+func (p *lookupProvider) Matches(r Record, expected string) bool   { return r.CoinGeckoID == expected }
+func (p *lookupProvider) FetchedAt(r Record) time.Time             { return r.FetchedAt }
+func (p *lookupProvider) WithKey(r Record, k marketkey.Key) Record { r.Key = k; return r }
+func (p *lookupProvider) TTL() time.Duration                       { return p.service.ttl }
+func (p *lookupProvider) Now() time.Time                           { return p.service.now() }
+func (p *lookupProvider) Logf(format string, args ...any) {
+	p.service.logf("marketdata: fresh CoinGecko "+format, args...)
+}
+
+// Apply reports false for a record carrying neither a price nor a 24h change.
+// The cascade honours that by leaving the key incomplete and writing nothing,
+// so a payload with no data can no longer occupy the record for a whole TTL.
+func (p *lookupProvider) Apply(indexes []int, record Record) bool {
+	if record.PriceUSD == nil && record.Change24HPercent == nil {
+		return false
+	}
+	for _, index := range indexes {
+		p.result[index] = &wallet.CoinGeckoMarket{
+			ID:               record.CoinGeckoID,
+			PriceUSD:         ptr.Clone(record.PriceUSD),
+			Change24HPercent: ptr.Clone(record.Change24HPercent),
+		}
+	}
+	return true
+}
+
+func toCacheWrites(writes []marketpipeline.Write[Record]) []CacheWrite {
+	out := make([]CacheWrite, len(writes))
+	for i, w := range writes {
+		out[i] = CacheWrite{Record: w.Record, TTL: w.TTL}
+	}
+	return out
+}
+
+// fetchRecords turns one batch of CoinGecko IDs into records. The key is left
+// unset; the cascade stamps it per key, since one ID can back several keys.
+func (s *Service) fetchRecords(ctx context.Context, ids []string) (map[string]Record, error) {
+	prices, err := s.clientPrices(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	fetchedAt := s.now().UTC()
+	records := make(map[string]Record, len(prices))
+	for _, id := range ids {
+		price, ok := prices[id]
+		if !ok {
+			continue
+		}
+		records[id] = s.recordFromPrice(Key{}, id, price, fetchedAt)
+	}
+	return records, nil
+}
+
+// EnrichTokens fills market fields on a copy of tokens. It runs the same
+// cascade as LookupFresh, adding a stale hook: when no tier has fresh data, the
+// newest expired record still supplies the non-price fields.
 func (s *Service) EnrichTokens(ctx context.Context, tokens []wallet.Token) []wallet.Token {
 	out := cloneTokens(tokens)
 	if len(out) == 0 || s == nil || s.catalog == nil || s.catalog.Current() == nil {
@@ -220,139 +239,118 @@ func (s *Service) EnrichTokens(ctx context.Context, tokens []wallet.Token) []wal
 		return out
 	}
 
-	now := s.now().UTC()
-	complete := make(map[Key]bool, len(keyOrder))
 	stale := make(map[Key]Record)
+	complete := marketpipeline.Run[string, Record](
+		enrichCtx,
+		&enrichProvider{service: s, tokens: out},
+		marketpipeline.Request[string]{
+			KeyOrder:     keyOrder,
+			ExpectedID:   expectedID,
+			IndexesByKey: indexesByKey,
+		},
+		marketpipeline.Options[Record]{
+			Stale: func(key Key, record Record) {
+				stale[key] = newerStaleRecord(stale[key], record)
+			},
+		},
+	)
 
-	redisRecords := make(map[Key]Record)
-	if s.cache != nil {
-		loaded, err := s.cache.LoadMarketData(enrichCtx, keyOrder)
-		if err != nil {
-			s.logf("marketdata: redis load failed: %v", err)
-		} else {
-			redisRecords = loaded
-		}
-	}
-	for _, key := range keyOrder {
-		record, ok := matchingRecord(redisRecords, key, expectedID[key])
-		if !ok {
-			continue
-		}
-		if record.Fresh(now, s.ttl) {
-			s.applyFresh(out, indexesByKey[key], record)
-			complete[key] = true
-			continue
-		}
-		stale[key] = record
-	}
-
-	remaining := incompleteKeys(keyOrder, complete)
-	promotions := make([]CacheWrite, 0, len(remaining))
-	postgresRecords := make(map[Key]Record)
-	if s.store != nil && len(remaining) > 0 {
-		loaded, err := s.store.LoadMarketData(enrichCtx, remaining)
-		if err != nil {
-			s.logf("marketdata: postgres load failed: %v", err)
-		} else {
-			postgresRecords = loaded
-		}
-	}
-	for _, key := range remaining {
-		record, ok := matchingRecord(postgresRecords, key, expectedID[key])
-		if !ok {
-			continue
-		}
-		if record.Fresh(now, s.ttl) {
-			s.applyFresh(out, indexesByKey[key], record)
-			complete[key] = true
-			if ttl := record.RemainingTTL(now, s.ttl); ttl > 0 {
-				promotions = append(promotions, CacheWrite{Record: record, TTL: ttl})
-			}
-			continue
-		}
-		stale[key] = newerStaleRecord(stale[key], record)
-	}
-	if len(promotions) > 0 && s.cache != nil {
-		if err := s.cache.SaveMarketData(enrichCtx, promotions); err != nil {
-			s.logf("marketdata: redis promotion failed: %v", err)
-		}
-	}
-
-	groups := make(map[string][]Key)
+	// Anything the cascade could not complete falls back to the newest expired
+	// record seen, in the reduced stale form: no price, no Price object.
 	for _, key := range keyOrder {
 		if complete[key] {
 			continue
 		}
-		id := expectedID[key]
-		groups[id] = append(groups[id], key)
-	}
-	ids := make([]string, 0, len(groups))
-	for id := range groups {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for start := 0; start < len(ids); start += priceBatchSize {
-		if err := enrichCtx.Err(); err != nil {
-			break
-		}
-		end := start + priceBatchSize
-		if end > len(ids) {
-			end = len(ids)
-		}
-		batchIDs := ids[start:end]
-		prices, err := s.clientPrices(enrichCtx, batchIDs)
-		if err != nil {
-			s.logf("marketdata: CoinGecko price batch failed for %d IDs: %v", len(batchIDs), err)
-			if enrichCtx.Err() != nil {
-				break
-			}
-			continue
-		}
-
-		fetchedAt := s.now().UTC()
-		fetched := make([]Record, 0)
-		for _, id := range batchIDs {
-			price, ok := prices[id]
-			if !ok {
-				continue
-			}
-			for _, key := range groups[id] {
-				if complete[key] {
-					continue
-				}
-				record := s.recordFromPrice(key, id, price, fetchedAt)
-				s.applyFresh(out, indexesByKey[key], record)
-				complete[key] = true
-				fetched = append(fetched, record)
-			}
-		}
-		if len(fetched) == 0 {
-			continue
-		}
-		if s.store != nil {
-			if err := s.store.SaveMarketData(enrichCtx, fetched); err != nil {
-				s.logf("marketdata: postgres save failed: %v", err)
-			}
-		}
-		if s.cache != nil {
-			writes := make([]CacheWrite, len(fetched))
-			for i, record := range fetched {
-				writes[i] = CacheWrite{Record: record, TTL: s.ttl}
-			}
-			if err := s.cache.SaveMarketData(enrichCtx, writes); err != nil {
-				s.logf("marketdata: redis save failed: %v", err)
-			}
-		}
-	}
-
-	for _, key := range keyOrder {
-		if !complete[key] {
-			if record, ok := stale[key]; ok {
-				s.applyStale(out, indexesByKey[key], record)
-			}
+		if record, ok := stale[key]; ok {
+			s.applyStale(out, indexesByKey[key], record)
 		}
 	}
 	return out
+}
+
+// enrichProvider is the address route's half of the cascade. It differs from
+// lookupProvider in exactly one way that matters: what counts as usable.
+type enrichProvider struct {
+	service *Service
+	tokens  []wallet.Token
+}
+
+var _ marketpipeline.Provider[string, Record] = (*enrichProvider)(nil)
+
+// Apply is deliberately more permissive than lookupProvider.Apply. Enrichment
+// also renders MarketCapUSD and MarketDataUpdatedAt, so a record carrying only
+// those is useful here even though the comparison route would reject it.
+func (p *enrichProvider) Apply(indexes []int, record Record) bool {
+	if record.PriceUSD == nil && record.Change24HPercent == nil &&
+		record.MarketCapUSD == nil && record.MarketDataUpdatedAt == nil {
+		return false
+	}
+	p.service.applyFresh(p.tokens, indexes, record)
+	return true
+}
+
+func (p *enrichProvider) LoadCache(ctx context.Context, keys []marketkey.Key) (map[marketkey.Key]Record, error) {
+	if p.service.cache == nil {
+		return nil, nil
+	}
+	return p.service.cache.LoadMarketData(ctx, keys)
+}
+
+func (p *enrichProvider) SaveCache(ctx context.Context, writes []marketpipeline.Write[Record]) error {
+	if p.service.cache == nil {
+		return nil
+	}
+	return p.service.cache.SaveMarketData(ctx, toCacheWrites(writes))
+}
+
+func (p *enrichProvider) LoadStore(ctx context.Context, keys []marketkey.Key) (map[marketkey.Key]Record, error) {
+	if p.service.store == nil {
+		return nil, nil
+	}
+	return p.service.store.LoadMarketData(ctx, keys)
+}
+
+func (p *enrichProvider) SaveStore(ctx context.Context, records []Record) error {
+	if p.service.store == nil {
+		return nil
+	}
+	return p.service.store.SaveMarketData(ctx, records)
+}
+
+func (p *enrichProvider) Fetch(ctx context.Context, ids []string) (map[string]Record, error) {
+	return p.service.fetchRecords(ctx, ids)
+}
+
+func (p *enrichProvider) LoadMisses(ctx context.Context, keys []marketkey.Key) (map[marketkey.Key]struct{}, error) {
+	if p.service.misses == nil {
+		return nil, nil
+	}
+	return p.service.misses.LoadCoinGeckoMisses(ctx, keys)
+}
+
+func (p *enrichProvider) SaveMisses(ctx context.Context, keys []marketkey.Key, ttl time.Duration) error {
+	if p.service.misses == nil {
+		return nil
+	}
+	return p.service.misses.SaveCoinGeckoMisses(ctx, keys, ttl)
+}
+
+// HasData matches lookupProvider.HasData: whether CoinGecko returned anything
+// at all. A miss is a fact about the provider, so both callers agree on it even
+// though they disagree about Apply.
+func (p *enrichProvider) HasData(r Record) bool {
+	return r.PriceUSD != nil || r.Change24HPercent != nil || r.MarketCapUSD != nil || r.MarketDataUpdatedAt != nil
+}
+
+func (p *enrichProvider) MissTTL() time.Duration                   { return p.service.missTTL }
+func (p *enrichProvider) BatchLimit() int                          { return priceBatchSize }
+func (p *enrichProvider) Matches(r Record, expected string) bool   { return r.CoinGeckoID == expected }
+func (p *enrichProvider) FetchedAt(r Record) time.Time             { return r.FetchedAt }
+func (p *enrichProvider) WithKey(r Record, k marketkey.Key) Record { r.Key = k; return r }
+func (p *enrichProvider) TTL() time.Duration                       { return p.service.ttl }
+func (p *enrichProvider) Now() time.Time                           { return p.service.now() }
+func (p *enrichProvider) Logf(format string, args ...any) {
+	p.service.logf("marketdata: "+format, args...)
 }
 
 func (s *Service) resolve(catalog *Catalog, tokens []wallet.Token) ([]resolvedToken, map[Key]string, map[Key][]int, []Key) {
@@ -467,8 +465,8 @@ func (s *Service) optionalFloat(id, field string, number *json.Number) *float64 
 
 func (s *Service) applyFresh(tokens []wallet.Token, indexes []int, record Record) {
 	for _, index := range indexes {
-		tokens[index].Change24HPercent = cloneFloat(record.Change24HPercent)
-		tokens[index].MarketCapUSD = cloneFloat(record.MarketCapUSD)
+		tokens[index].Change24HPercent = ptr.Clone(record.Change24HPercent)
+		tokens[index].MarketCapUSD = ptr.Clone(record.MarketCapUSD)
 		tokens[index].MarketDataUpdatedAt = cloneMarketTime(record.MarketDataUpdatedAt)
 		if record.PriceUSD == nil {
 			continue
@@ -485,8 +483,8 @@ func (s *Service) applyFresh(tokens []wallet.Token, indexes []int, record Record
 
 func (s *Service) applyStale(tokens []wallet.Token, indexes []int, record Record) {
 	for _, index := range indexes {
-		tokens[index].Change24HPercent = cloneFloat(record.Change24HPercent)
-		tokens[index].MarketCapUSD = cloneFloat(record.MarketCapUSD)
+		tokens[index].Change24HPercent = ptr.Clone(record.Change24HPercent)
+		tokens[index].MarketCapUSD = ptr.Clone(record.MarketCapUSD)
 		tokens[index].MarketDataUpdatedAt = cloneMarketTime(record.MarketDataUpdatedAt)
 	}
 }
@@ -498,35 +496,19 @@ func cloneTokens(tokens []wallet.Token) []wallet.Token {
 	out := make([]wallet.Token, len(tokens))
 	copy(out, tokens)
 	for i := range out {
-		out[i].TokenAddress = cloneString(tokens[i].TokenAddress)
-		out[i].LogoURI = cloneString(tokens[i].LogoURI)
-		out[i].CoinKey = cloneString(tokens[i].CoinKey)
-		out[i].PriceUSD = cloneString(tokens[i].PriceUSD)
-		out[i].Change24HPercent = cloneFloat(tokens[i].Change24HPercent)
-		out[i].MarketCapUSD = cloneFloat(tokens[i].MarketCapUSD)
-		out[i].MarketDataUpdatedAt = cloneString(tokens[i].MarketDataUpdatedAt)
+		out[i].TokenAddress = ptr.Clone(tokens[i].TokenAddress)
+		out[i].LogoURI = ptr.Clone(tokens[i].LogoURI)
+		out[i].CoinKey = ptr.Clone(tokens[i].CoinKey)
+		out[i].PriceUSD = ptr.Clone(tokens[i].PriceUSD)
+		out[i].Change24HPercent = ptr.Clone(tokens[i].Change24HPercent)
+		out[i].MarketCapUSD = ptr.Clone(tokens[i].MarketCapUSD)
+		out[i].MarketDataUpdatedAt = ptr.Clone(tokens[i].MarketDataUpdatedAt)
 		if tokens[i].Price != nil {
 			price := *tokens[i].Price
 			out[i].Price = &price
 		}
 	}
 	return out
-}
-
-func cloneString(value *string) *string {
-	if value == nil {
-		return nil
-	}
-	copy := *value
-	return &copy
-}
-
-func cloneFloat(value *float64) *float64 {
-	if value == nil {
-		return nil
-	}
-	copy := *value
-	return &copy
 }
 
 func cloneMarketTime(value *time.Time) *string {
