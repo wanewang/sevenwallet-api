@@ -160,6 +160,53 @@
                     }
                 }
             }
+        },
+        "/tokens/{address}": {
+            "get": {
+                "description": "Loads the latest locally cached wallet portfolio, applies normal token filtering, and returns fresh CoinGecko and CoinMarketCap data when available. Never refreshes holdings from Alchemy.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tokens"
+                ],
+                "summary": "Cached wallet token markets",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "0x-prefixed 20-byte wallet address",
+                        "name": "address",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/wallet-api_internal_wallet.TokenMarketPortfolio"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -168,6 +215,38 @@
             "properties": {
                 "error": {
                     "type": "string"
+                }
+            }
+        },
+        "wallet-api_internal_wallet.CoinGeckoMarket": {
+            "type": "object",
+            "properties": {
+                "change24hPercent": {
+                    "type": "number",
+                    "x-nullable": true
+                },
+                "id": {
+                    "type": "string"
+                },
+                "priceUSD": {
+                    "type": "string",
+                    "x-nullable": true
+                }
+            }
+        },
+        "wallet-api_internal_wallet.CoinMarketCapMarket": {
+            "type": "object",
+            "properties": {
+                "change24hPercent": {
+                    "type": "number",
+                    "x-nullable": true
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "priceUSD": {
+                    "type": "string",
+                    "x-nullable": true
                 }
             }
         },
@@ -232,6 +311,63 @@
                     "type": "string"
                 },
                 "tokenAddress": {
+                    "type": "string"
+                }
+            }
+        },
+        "wallet-api_internal_wallet.TokenMarket": {
+            "type": "object",
+            "properties": {
+                "balance": {
+                    "type": "string"
+                },
+                "cg": {
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/wallet-api_internal_wallet.CoinGeckoMarket"
+                        }
+                    ],
+                    "x-nullable": true
+                },
+                "cmc": {
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/wallet-api_internal_wallet.CoinMarketCapMarket"
+                        }
+                    ],
+                    "x-nullable": true
+                },
+                "decimals": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "symbol": {
+                    "type": "string"
+                },
+                "tokenAddress": {
+                    "type": "string",
+                    "x-nullable": true
+                }
+            }
+        },
+        "wallet-api_internal_wallet.TokenMarketPortfolio": {
+            "type": "object",
+            "properties": {
+                "network": {
+                    "type": "string"
+                },
+                "portfolioFetchedAt": {
+                    "type": "string"
+                },
+                "tokens": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/wallet-api_internal_wallet.TokenMarket"
+                    }
+                },
+                "wallet": {
                     "type": "string"
                 }
             }

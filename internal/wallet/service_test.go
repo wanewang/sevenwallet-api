@@ -208,6 +208,57 @@ func TestGetTokensCacheHitFiltersCachedSnapshot(t *testing.T) {
 	}
 }
 
+func TestGetTokenMarketsUsesLatestSnapshotFiltersAndNeverCallsAlchemy(t *testing.T) {
+	fetchedAt := time.Now().UTC().Add(-24 * time.Hour)
+	cached := &TokenPortfolio{Address: "0xabc", Network: "eth-mainnet", FetchedAt: fetchedAt, Tokens: []Token{
+		{Symbol: "ETH", Name: "Ethereum", Decimals: 18, Balance: "2", IsNative: true},
+		{TokenAddress: usdc("0xA0B8"), Symbol: "usdc", Name: "old", Decimals: 6, Balance: "12.5"},
+		{TokenAddress: usdc("0xSPAM"), Symbol: "SCAM", Decimals: 18, Balance: "9"},
+	}}
+	price := "1.00"
+	change := 2.5
+	comparator := &fakeMarketComparator{out: []MarketPair{
+		{CG: &CoinGeckoMarket{ID: "ethereum", PriceUSD: &price}},
+		{CMC: &CoinMarketCapMarket{ID: 3408, Change24HPercent: &change}},
+	}}
+	alchemy := &fakeAlchemy{}
+	svc := NewService(alchemy, &fakeTokenStore{saved: cached}, &fakeTxCache{}, allowUSDC(), denyValidator(), nil, "eth-mainnet", time.Minute)
+	svc.SetMarketComparator(comparator)
+
+	got, err := svc.GetTokenMarkets(context.Background(), "0xABC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alchemy.tokenCalls != 0 {
+		t.Fatalf("Alchemy calls = %d, want 0", alchemy.tokenCalls)
+	}
+	if comparator.calls != 1 || len(comparator.seen) != 2 {
+		t.Fatalf("comparator calls=%d seen=%#v", comparator.calls, comparator.seen)
+	}
+	if got.Wallet != "0xabc" || got.PortfolioFetchedAt != fetchedAt || len(got.Tokens) != 2 {
+		t.Fatalf("portfolio = %#v", got)
+	}
+	if got.Tokens[1].Symbol != "USDC" || got.Tokens[0].CG == nil || got.Tokens[1].CMC == nil {
+		t.Fatalf("tokens = %#v", got.Tokens)
+	}
+}
+
+func TestGetTokenMarketsMissingAndStorageErrors(t *testing.T) {
+	for _, tc := range []struct {
+		store *fakeTokenStore
+		want  error
+	}{
+		{store: &fakeTokenStore{}, want: ErrWalletNotCached},
+		{store: &fakeTokenStore{getErr: errors.New("db down")}, want: ErrStore},
+	} {
+		svc := NewService(&fakeAlchemy{}, tc.store, &fakeTxCache{}, allowUSDC(), denyValidator(), nil, "eth-mainnet", time.Minute)
+		_, err := svc.GetTokenMarkets(context.Background(), "0xABC")
+		if !errors.Is(err, tc.want) {
+			t.Fatalf("error = %v, want %v", err, tc.want)
+		}
+	}
+}
+
 func TestGetTokensMarketEnrichmentRunsAfterCacheMissFiltering(t *testing.T) {
 	fa := &fakeAlchemy{tokens: []alchemy.Token{
 		{TokenAddress: nil, Symbol: "ETH", Decimals: 18, RawBalance: "1000000000000000000"},

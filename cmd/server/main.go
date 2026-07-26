@@ -8,9 +8,13 @@ import (
 
 	"wallet-api/internal/alchemy"
 	"wallet-api/internal/api"
+	"wallet-api/internal/cmcmarket"
 	"wallet-api/internal/coingecko"
+	"wallet-api/internal/coinmarketcap"
 	"wallet-api/internal/config"
 	"wallet-api/internal/lifi"
+	"wallet-api/internal/marketchain"
+	"wallet-api/internal/marketcompare"
 	"wallet-api/internal/marketdata"
 	"wallet-api/internal/moralis"
 	"wallet-api/internal/rediscache"
@@ -32,6 +36,10 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config: %v", err)
+	}
+	marketChain, err := marketchain.Lookup(cfg.AlchemyNetwork)
+	if err != nil {
+		log.Fatalf("market chain: %v", err)
 	}
 
 	setupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -75,6 +83,16 @@ func main() {
 	go coinRefresher.Run(context.Background())
 	log.Printf("marketdata catalog ready: %d mappings (platform=%s, refresh=%s)", coinCatalog.Count(), cfg.CoinGeckoPlatform, cfg.CoinGeckoListRefresh)
 
+	cmcClient := coinmarketcap.New(cfg.CoinMarketCapBaseURL)
+	cmcCatalog := &cmcmarket.Holder{}
+	cmcRefresher := cmcmarket.NewRefresher(
+		cmcClient, pg, cmcCatalog, marketchain.CoinMarketCapPlatformIDs(),
+		cfg.CoinMarketCapListRefresh,
+	)
+	cmcRefresher.Bootstrap(setupCtx)
+	go cmcRefresher.Run(context.Background())
+	log.Printf("CoinMarketCap catalog ready: %d mappings (platform=%d, refresh=%s)", cmcCatalog.Count(), marketChain.CoinMarketCapPlatform, cfg.CoinMarketCapListRefresh)
+
 	var alchemyOptions []alchemy.Option
 	var moralisOptions []moralis.Option
 	if cfg.ProviderAPILogging {
@@ -90,6 +108,17 @@ func main() {
 		cfg.CoinGeckoMarketTTL, cfg.CoinGeckoEnrichTimeout,
 	)
 	svc := wallet.NewService(ac, pg, pg, holder, validator, coinMarket, cfg.AlchemyNetwork, cfg.CacheTTL)
+	coinGeckoCompare := marketdata.NewService(
+		coinGeckoClient, redisCache, pg, coinCatalog,
+		marketChain.CoinGeckoPlatform, []string{marketChain.CoinGeckoNativeID},
+		cfg.CoinGeckoMarketTTL, cfg.TokenMarketEnrichTimeout,
+	)
+	coinMarketCapCompare := cmcmarket.NewService(
+		cmcClient, redisCache, pg, cmcCatalog,
+		marketChain.CoinMarketCapPlatform, marketChain.CoinMarketCapNativeID,
+		marketChain.MarketChain, cfg.CoinMarketCapMarketTTL,
+	)
+	svc.SetMarketComparator(marketcompare.New(coinGeckoCompare, coinMarketCapCompare, cfg.TokenMarketEnrichTimeout))
 	router := api.NewRouter(svc)
 
 	srv := &http.Server{

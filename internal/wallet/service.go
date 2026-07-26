@@ -18,9 +18,18 @@ type Service struct {
 	allow     Allowlist
 	validator Validator
 	market    MarketEnricher
+	compare   MarketComparator
 	network   string
 	ttl       time.Duration
 	now       func() time.Time
+}
+
+// SetMarketComparator installs the provider-specific comparator used only by
+// the cache-only /v1/tokens route.
+func (s *Service) SetMarketComparator(compare MarketComparator) {
+	if s != nil {
+		s.compare = compare
+	}
 }
 
 // NewService builds a Service with a real-time clock.
@@ -55,6 +64,39 @@ func (s *Service) GetTokens(ctx context.Context, address string) (*TokenPortfoli
 		return nil, fmt.Errorf("%w: %v", ErrStore, err)
 	}
 	return s.finishTokens(ctx, p), nil
+}
+
+// GetTokenMarkets loads the latest saved wallet snapshot without refreshing it
+// from Alchemy, applies the normal token filter, and compares fresh providers.
+func (s *Service) GetTokenMarkets(ctx context.Context, address string) (*TokenMarketPortfolio, error) {
+	addr := NormalizeAddress(address)
+	p, ok, err := s.tokens.GetLatestTokens(ctx, addr, s.network)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrStore, err)
+	}
+	if !ok {
+		return nil, ErrWalletNotCached
+	}
+	filtered := s.filterTokens(ctx, p)
+	pairs := make([]MarketPair, len(filtered.Tokens))
+	if s.compare != nil {
+		pairs = s.compare.Compare(ctx, filtered.Tokens)
+	}
+	out := &TokenMarketPortfolio{
+		Wallet: addr, Network: p.Network, PortfolioFetchedAt: p.FetchedAt,
+		Tokens: make([]TokenMarket, len(filtered.Tokens)),
+	}
+	for i, token := range filtered.Tokens {
+		out.Tokens[i] = TokenMarket{
+			TokenAddress: cloneStringPtr(token.TokenAddress), Symbol: token.Symbol,
+			Name: token.Name, Decimals: token.Decimals, Balance: token.Balance,
+		}
+		if i < len(pairs) {
+			out.Tokens[i].CG = pairs[i].CG
+			out.Tokens[i].CMC = pairs[i].CMC
+		}
+	}
+	return out, nil
 }
 
 // GetNativeTokens returns native ETH metadata and price from the current LI.FI snapshot.
@@ -257,3 +299,11 @@ func (s *Service) filterTransfers(page *TransactionPage) *TransactionPage {
 }
 
 func strptr(s string) *string { return &s }
+
+func cloneStringPtr(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}

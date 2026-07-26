@@ -12,6 +12,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"wallet-api/internal/cmcmarket"
 	"wallet-api/internal/lifi"
 	"wallet-api/internal/marketdata"
 	"wallet-api/internal/tokenvalidity"
@@ -47,6 +48,11 @@ type payload struct {
 
 type marketPayload struct {
 	marketdata.Record
+	FetchedAtUnixNano string `json:"fetchedAtUnixNano"`
+}
+
+type cmcMarketPayload struct {
+	cmcmarket.Record
 	FetchedAtUnixNano string `json:"fetchedAtUnixNano"`
 }
 
@@ -413,6 +419,10 @@ redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[3])
 return 1
 `
 
+var cmcMarketCASLua = strings.Replace(marketCASLua,
+	"local required = {'chain', 'tokenKey', 'coingeckoID', 'fetchedAt', 'fetchedAtUnixNano'}",
+	"local required = {'chain', 'tokenKey', 'fetchedAt', 'fetchedAtUnixNano'}\n  if type(decoded['coinMarketCapID']) ~= 'number' or decoded['coinMarketCapID'] <= 0 then\n    return false\n  end", 1)
+
 // SaveTokenList writes the list with the configured safety TTL.
 func (c *Cache) SaveTokenList(ctx context.Context, chain string, tokens []lifi.ListToken, fetchedAt time.Time) error {
 	b, err := json.Marshal(payload{FetchedAt: fetchedAt, Tokens: tokens})
@@ -557,6 +567,96 @@ func decodeMarketPayload(raw []byte, key marketdata.Key) (marketdata.Record, boo
 	if err != nil || strconv.FormatInt(fetchedAtUnixNano, 10) != payload.FetchedAtUnixNano ||
 		fetchedAtUnixNano != payload.Record.FetchedAt.UnixNano() {
 		return marketdata.Record{}, false
+	}
+	return payload.Record, true
+}
+
+func cmcMarketKey(k marketdata.Key) string {
+	return "cmc:market:" + k.Chain + ":" + k.TokenKey
+}
+
+// LoadCoinMarketCapMarketData loads requested CMC records with one Redis MGET.
+func (c *Cache) LoadCoinMarketCapMarketData(ctx context.Context, keys []marketdata.Key) (map[marketdata.Key]cmcmarket.Record, error) {
+	result := make(map[marketdata.Key]cmcmarket.Record, len(keys))
+	if len(keys) == 0 {
+		return result, nil
+	}
+	redisKeys := make([]string, len(keys))
+	for i, key := range keys {
+		redisKeys[i] = cmcMarketKey(key)
+	}
+	values, err := c.client.MGet(ctx, redisKeys...).Result()
+	if err != nil {
+		return nil, err
+	}
+	for i, value := range values {
+		if value == nil {
+			continue
+		}
+		var raw []byte
+		switch v := value.(type) {
+		case string:
+			raw = []byte(v)
+		case []byte:
+			raw = v
+		default:
+			log.Printf("rediscache: malformed CMC market data key %q: unexpected Redis value %T", redisKeys[i], value)
+			continue
+		}
+		record, ok := decodeCMCMarketPayload(raw, keys[i])
+		if !ok {
+			log.Printf("rediscache: malformed CMC market data key %q: invalid envelope", redisKeys[i])
+			continue
+		}
+		result[keys[i]] = record
+	}
+	return result, nil
+}
+
+// SaveCoinMarketCapMarketData stores positive-TTL CMC records with timestamp CAS.
+func (c *Cache) SaveCoinMarketCapMarketData(ctx context.Context, writes []cmcmarket.CacheWrite) error {
+	pipe := c.client.Pipeline()
+	queued := 0
+	for _, write := range writes {
+		if write.TTL <= 0 {
+			continue
+		}
+		payload, err := json.Marshal(cmcMarketPayload{
+			Record:            write.Record,
+			FetchedAtUnixNano: strconv.FormatInt(write.Record.FetchedAt.UnixNano(), 10),
+		})
+		if err != nil {
+			return err
+		}
+		ttlMilliseconds := write.TTL.Milliseconds()
+		if ttlMilliseconds < 1 {
+			ttlMilliseconds = 1
+		}
+		pipe.Eval(ctx, cmcMarketCASLua, []string{cmcMarketKey(write.Record.Key)},
+			string(payload), strconv.FormatInt(write.Record.FetchedAt.UnixNano(), 10), strconv.FormatInt(ttlMilliseconds, 10),
+			write.Record.Key.Chain, write.Record.Key.TokenKey)
+		queued++
+	}
+	if queued == 0 {
+		return nil
+	}
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+func decodeCMCMarketPayload(raw []byte, key marketdata.Key) (cmcmarket.Record, bool) {
+	var payload cmcMarketPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return cmcmarket.Record{}, false
+	}
+	if payload.Record.Chain != key.Chain || payload.Record.TokenKey != key.TokenKey ||
+		payload.Record.CoinMarketCapID <= 0 || payload.Record.FetchedAt.IsZero() {
+		return cmcmarket.Record{}, false
+	}
+	fetchedAtUnixNano, err := strconv.ParseInt(payload.FetchedAtUnixNano, 10, 64)
+	if err != nil || strconv.FormatInt(fetchedAtUnixNano, 10) != payload.FetchedAtUnixNano ||
+		fetchedAtUnixNano != payload.Record.FetchedAt.UnixNano() {
+		return cmcmarket.Record{}, false
 	}
 	return payload.Record, true
 }

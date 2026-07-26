@@ -62,6 +62,148 @@ type resolvedToken struct {
 
 var _ wallet.MarketEnricher = (*Service)(nil)
 
+// LookupFresh returns CoinGecko comparison data aligned with tokens. It uses
+// the existing catalog and cache hierarchy, but deliberately never serves an
+// expired record and does not mutate the input token slice.
+func (s *Service) LookupFresh(ctx context.Context, tokens []wallet.Token) []*wallet.CoinGeckoMarket {
+	result := make([]*wallet.CoinGeckoMarket, len(tokens))
+	if len(tokens) == 0 || s == nil || s.catalog == nil || s.catalog.Current() == nil {
+		return result
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	resolved, expectedID, indexesByKey, keyOrder := s.resolve(s.catalog.Current(), tokens)
+	if len(resolved) == 0 {
+		return result
+	}
+
+	now := s.now().UTC()
+	complete := make(map[Key]bool, len(keyOrder))
+	redisRecords := make(map[Key]Record)
+	if s.cache != nil {
+		loaded, err := s.cache.LoadMarketData(ctx, keyOrder)
+		if err != nil {
+			s.logf("marketdata: fresh CoinGecko redis load failed: %v", err)
+		} else {
+			redisRecords = loaded
+		}
+	}
+	for _, key := range keyOrder {
+		record, ok := matchingRecord(redisRecords, key, expectedID[key])
+		if !ok || !record.Fresh(now, s.ttl) {
+			continue
+		}
+		applyCoinGeckoResult(result, indexesByKey[key], record)
+		complete[key] = true
+	}
+
+	remaining := incompleteKeys(keyOrder, complete)
+	postgresRecords := make(map[Key]Record)
+	if s.store != nil && len(remaining) > 0 {
+		loaded, err := s.store.LoadMarketData(ctx, remaining)
+		if err != nil {
+			s.logf("marketdata: fresh CoinGecko postgres load failed: %v", err)
+		} else {
+			postgresRecords = loaded
+		}
+	}
+	promotions := make([]CacheWrite, 0, len(remaining))
+	for _, key := range remaining {
+		record, ok := matchingRecord(postgresRecords, key, expectedID[key])
+		if !ok || !record.Fresh(now, s.ttl) {
+			continue
+		}
+		applyCoinGeckoResult(result, indexesByKey[key], record)
+		complete[key] = true
+		if ttl := record.RemainingTTL(now, s.ttl); ttl > 0 {
+			promotions = append(promotions, CacheWrite{Record: record, TTL: ttl})
+		}
+	}
+	if len(promotions) > 0 && s.cache != nil {
+		if err := s.cache.SaveMarketData(ctx, promotions); err != nil {
+			s.logf("marketdata: fresh CoinGecko redis promotion failed: %v", err)
+		}
+	}
+
+	groups := make(map[string][]Key)
+	for _, key := range keyOrder {
+		if !complete[key] {
+			groups[expectedID[key]] = append(groups[expectedID[key]], key)
+		}
+	}
+	ids := make([]string, 0, len(groups))
+	for id := range groups {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for start := 0; start < len(ids); start += priceBatchSize {
+		if ctx.Err() != nil {
+			break
+		}
+		end := start + priceBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batchIDs := ids[start:end]
+		prices, err := s.clientPrices(ctx, batchIDs)
+		if err != nil {
+			s.logf("marketdata: fresh CoinGecko price batch failed for %d IDs: %v", len(batchIDs), err)
+			if ctx.Err() != nil {
+				break
+			}
+			continue
+		}
+
+		fetchedAt := s.now().UTC()
+		fetched := make([]Record, 0)
+		for _, id := range batchIDs {
+			price, ok := prices[id]
+			if !ok {
+				continue
+			}
+			for _, key := range groups[id] {
+				record := s.recordFromPrice(key, id, price, fetchedAt)
+				applyCoinGeckoResult(result, indexesByKey[key], record)
+				complete[key] = true
+				fetched = append(fetched, record)
+			}
+		}
+		if len(fetched) == 0 {
+			continue
+		}
+		if s.store != nil {
+			if err := s.store.SaveMarketData(ctx, fetched); err != nil {
+				s.logf("marketdata: fresh CoinGecko postgres save failed: %v", err)
+			}
+		}
+		if s.cache != nil {
+			writes := make([]CacheWrite, len(fetched))
+			for i, record := range fetched {
+				writes[i] = CacheWrite{Record: record, TTL: s.ttl}
+			}
+			if err := s.cache.SaveMarketData(ctx, writes); err != nil {
+				s.logf("marketdata: fresh CoinGecko redis save failed: %v", err)
+			}
+		}
+	}
+	return result
+}
+
+func applyCoinGeckoResult(result []*wallet.CoinGeckoMarket, indexes []int, record Record) {
+	if record.PriceUSD == nil && record.Change24HPercent == nil {
+		return
+	}
+	for _, index := range indexes {
+		result[index] = &wallet.CoinGeckoMarket{
+			ID:               record.CoinGeckoID,
+			PriceUSD:         cloneString(record.PriceUSD),
+			Change24HPercent: cloneFloat(record.Change24HPercent),
+		}
+	}
+}
+
 func (s *Service) EnrichTokens(ctx context.Context, tokens []wallet.Token) []wallet.Token {
 	out := cloneTokens(tokens)
 	if len(out) == 0 || s == nil || s.catalog == nil || s.catalog.Current() == nil {
@@ -233,10 +375,11 @@ func (s *Service) resolve(catalog *Catalog, tokens []wallet.Token) ([]resolvedTo
 			id, ok = catalog.ResolveContract(s.platform, *token.TokenAddress)
 			key = ContractKey(s.platform, *token.TokenAddress)
 			if !ok {
-				s.logf("marketdata: unresolved contract mapping chain=%q address=%q", s.platform, strings.TrimSpace(*token.TokenAddress))
+				s.logf("marketdata: unresolved contract mapping source=cg chain=%q address=%q", key.Chain, key.TokenKey)
 			}
 		} else {
-			s.logf("marketdata: unresolved contract mapping chain=%q address=%q", s.platform, "")
+			key = ContractKey(s.platform, "")
+			s.logf("marketdata: unresolved contract mapping source=cg chain=%q address=%q", key.Chain, key.TokenKey)
 		}
 		if !ok || strings.TrimSpace(id) == "" {
 			continue

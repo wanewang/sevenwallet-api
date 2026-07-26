@@ -12,6 +12,7 @@ import (
 
 type stubService struct {
 	portfolio    *wallet.TokenPortfolio
+	markets      *wallet.TokenMarketPortfolio
 	page         *wallet.TransactionPage
 	nativeTokens []wallet.Token
 	err          error
@@ -21,6 +22,9 @@ type stubService struct {
 
 func (s *stubService) GetTokens(ctx context.Context, address string) (*wallet.TokenPortfolio, error) {
 	return s.portfolio, s.err
+}
+func (s *stubService) GetTokenMarkets(ctx context.Context, address string) (*wallet.TokenMarketPortfolio, error) {
+	return s.markets, s.err
 }
 func (s *stubService) GetNativeTokens(ctx context.Context) ([]wallet.Token, error) {
 	return s.nativeTokens, s.err
@@ -78,6 +82,74 @@ func TestTokensEndpointRejectsBadAddress(t *testing.T) {
 	rec := doGet(NewRouter(svc), "/v1/addresses/not-an-address/tokens")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestTokenMarketsEndpointOK(t *testing.T) {
+	price := "3210.45"
+	svc := &stubService{markets: &wallet.TokenMarketPortfolio{
+		Wallet: validAddr, Network: "eth-mainnet",
+		Tokens: []wallet.TokenMarket{{
+			Symbol: "ETH", Name: "Ethereum", Decimals: 18, Balance: "1",
+			CG: &wallet.CoinGeckoMarket{ID: "ethereum", PriceUSD: &price},
+		}},
+	}}
+	rec := doGet(NewRouter(svc), "/v1/tokens/"+validAddr)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+	var got wallet.TokenMarketPortfolio
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Wallet != validAddr || len(got.Tokens) != 1 || got.Tokens[0].CG == nil || got.Tokens[0].CMC != nil {
+		t.Fatalf("response = %#v", got)
+	}
+	var raw struct {
+		Tokens []map[string]any `json:"tokens"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := raw.Tokens[0]["cmc"]; !ok || value != nil {
+		t.Fatalf("cmc present=%v value=%v", ok, value)
+	}
+	cg := raw.Tokens[0]["cg"].(map[string]any)
+	if value, ok := cg["change24hPercent"]; !ok || value != nil {
+		t.Fatalf("cg.change24hPercent present=%v value=%v", ok, value)
+	}
+}
+
+func TestTokenMarketsEndpointRejectsInvalidWallet(t *testing.T) {
+	rec := doGet(NewRouter(&stubService{}), "/v1/tokens/bad")
+	if rec.Code != http.StatusBadRequest || rec.Body.String() != "{\"error\":\"invalid wallet\"}\n" {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestTokenMarketsOldQueryRouteIsRemoved(t *testing.T) {
+	for _, path := range []string{"/v1/tokens", "/v1/tokens?wallet=" + validAddr} {
+		rec := doGet(NewRouter(&stubService{}), path)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s: status=%d, want 404", path, rec.Code)
+		}
+	}
+}
+
+func TestTokenMarketsEndpointMapsMissingCacheAndStoreErrors(t *testing.T) {
+	cases := []struct {
+		err  error
+		code int
+		body string
+	}{
+		{wallet.ErrWalletNotCached, http.StatusNotFound, "{\"error\":\"wallet token cache not found\"}\n"},
+		{wallet.ErrStore, http.StatusServiceUnavailable, "{\"error\":\"storage unavailable\"}\n"},
+	}
+	for _, tc := range cases {
+		rec := doGet(NewRouter(&stubService{err: tc.err}), "/v1/tokens/"+validAddr)
+		if rec.Code != tc.code || rec.Body.String() != tc.body {
+			t.Fatalf("err=%v: status=%d body=%s", tc.err, rec.Code, rec.Body)
+		}
 	}
 }
 

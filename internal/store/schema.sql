@@ -75,6 +75,29 @@ CREATE TABLE IF NOT EXISTS coingecko_market_data (
     PRIMARY KEY (chain, token_key)
 );
 
+CREATE TABLE IF NOT EXISTS coinmarketcap_coin_mappings (
+    id          BIGINT      NOT NULL,
+    name        TEXT        NOT NULL,
+    symbol      TEXT        NOT NULL,
+    platform_id BIGINT      NOT NULL,
+    address     TEXT        NOT NULL,
+    fetched_at  TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (id, platform_id, address)
+);
+
+CREATE INDEX IF NOT EXISTS coinmarketcap_coin_mappings_lookup_idx
+    ON coinmarketcap_coin_mappings (platform_id, address);
+
+CREATE TABLE IF NOT EXISTS coinmarketcap_market_data (
+    chain                TEXT        NOT NULL,
+    token_key            TEXT        NOT NULL,
+    coinmarketcap_id     BIGINT      NOT NULL,
+    price_usd            TEXT,
+    change_24h_percent   NUMERIC,
+    fetched_at           TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (chain, token_key)
+);
+
 DO $$
 BEGIN
     IF EXISTS (

@@ -418,6 +418,81 @@ func TestEnrichRedisReadErrorFallsThroughToPostgres(t *testing.T) {
 	}
 }
 
+func TestLookupFreshReturnsAlignedProviderDataWithoutMutatingTokens(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	key := ContractKey("ethereum", "0xA0B8")
+	priceUSD := "1.0001"
+	change := -0.25
+	cache := &fakeMarketCache{loads: []map[Key]Record{{
+		key: record(key, "usd-coin", now.Add(-time.Minute), &priceUSD, &change, nil, nil),
+	}}}
+	service := newServiceForTest(t, cache, &fakeMarketStore{}, &fakePriceClient{}, []CoinMapping{contractMapping("usd-coin", "0xA0B8")}, nil, now)
+	tokens := []wallet.Token{contractToken("0xA0B8", "USDC"), contractToken("0xdead", "NONE")}
+	original := *tokens[0].PriceUSD
+
+	got := service.LookupFresh(context.Background(), tokens)
+
+	if len(got) != 2 || got[0] == nil || got[0].ID != "usd-coin" || got[0].PriceUSD == nil || *got[0].PriceUSD != priceUSD || got[1] != nil {
+		t.Fatalf("results = %#v", got)
+	}
+	if *tokens[0].PriceUSD != original {
+		t.Fatalf("input token mutated: %#v", tokens[0])
+	}
+	if len(service.store.(*fakeMarketStore).loadKeys) != 0 || len(service.client.(*fakePriceClient).batches) != 0 {
+		t.Fatal("fresh Redis hit called downstream")
+	}
+}
+
+func TestLookupFreshDoesNotUseExpiredFallbackAndPersistsNewData(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	key := ContractKey("ethereum", "0xA0B8")
+	oldPrice := "999"
+	cache := &fakeMarketCache{loads: []map[Key]Record{{
+		key: record(key, "usd-coin", now.Add(-time.Hour), &oldPrice, floatPtr(9), nil, nil),
+	}}}
+	store := &fakeMarketStore{loads: []map[Key]Record{{}}}
+	client := &fakePriceClient{responses: []map[string]coingecko.SimplePrice{{
+		"usd-coin": simplePrice("1.5", "2.5", "3", 1784781600),
+	}}}
+	service := newServiceForTest(t, cache, store, client, []CoinMapping{contractMapping("usd-coin", "0xA0B8")}, nil, now)
+
+	got := service.LookupFresh(context.Background(), []wallet.Token{contractToken("0xA0B8", "USDC")})
+
+	if got[0] == nil || got[0].PriceUSD == nil || *got[0].PriceUSD != "1.5" || got[0].Change24HPercent == nil || *got[0].Change24HPercent != 2.5 {
+		t.Fatalf("result = %#v", got[0])
+	}
+	if len(store.saves) != 1 || len(cache.saves) != 1 {
+		t.Fatalf("persistence store=%#v cache=%#v", store.saves, cache.saves)
+	}
+}
+
+func TestLookupFreshReturnsNilWhenOnlyDataIsExpired(t *testing.T) {
+	now := time.Now().UTC()
+	key := ContractKey("ethereum", "0xA0B8")
+	oldPrice := "999"
+	cache := &fakeMarketCache{loads: []map[Key]Record{{
+		key: record(key, "usd-coin", now.Add(-time.Hour), &oldPrice, floatPtr(9), nil, nil),
+	}}}
+	client := &fakePriceClient{errors: []error{errors.New("unavailable")}}
+	service := newServiceForTest(t, cache, &fakeMarketStore{}, client, []CoinMapping{contractMapping("usd-coin", "0xA0B8")}, nil, now)
+	if got := service.LookupFresh(context.Background(), []wallet.Token{contractToken("0xA0B8", "USDC")}); got[0] != nil {
+		t.Fatalf("expired fallback returned: %#v", got[0])
+	}
+}
+
+func TestLookupFreshUnresolvedContractLogIdentifiesCoinGecko(t *testing.T) {
+	now := time.Now().UTC()
+	service := newServiceForTest(t, &fakeMarketCache{}, &fakeMarketStore{}, &fakePriceClient{}, nil, nil, now)
+	var logs []string
+	service.logf = func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
+
+	service.LookupFresh(context.Background(), []wallet.Token{contractToken("0xDeAd", "NONE")})
+
+	if len(logs) != 1 || !strings.Contains(logs[0], `source=cg chain="ethereum" address="0xdead"`) {
+		t.Fatalf("logs = %#v", logs)
+	}
+}
+
 func TestEnrichPostgresReadErrorFetchesWithoutStaleFallback(t *testing.T) {
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 	client := &fakePriceClient{errors: []error{errors.New("CoinGecko down")}}

@@ -75,6 +75,33 @@ func (h *handlers) getTokens(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p)
 }
 
+// getTokenMarkets compares fresh CoinGecko and CoinMarketCap data for the
+// latest locally cached wallet portfolio without fetching holdings upstream.
+//
+// @Summary      Cached wallet token markets
+// @Description  Loads the latest locally cached wallet portfolio, applies normal token filtering, and returns fresh CoinGecko and CoinMarketCap data when available. Never refreshes holdings from Alchemy.
+// @Tags         tokens
+// @Produce      json
+// @Param        address  path      string  true  "0x-prefixed 20-byte wallet address"
+// @Success      200     {object}  wallet.TokenMarketPortfolio
+// @Failure      400     {object}  api.ErrorResponse
+// @Failure      404     {object}  api.ErrorResponse
+// @Failure      503     {object}  api.ErrorResponse
+// @Router       /tokens/{address} [get]
+func (h *handlers) getTokenMarkets(w http.ResponseWriter, r *http.Request) {
+	address := r.PathValue("address")
+	if !ValidAddress(address) {
+		writeError(w, http.StatusBadRequest, "invalid wallet")
+		return
+	}
+	portfolio, err := h.svc.GetTokenMarkets(r.Context(), address)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, portfolio)
+}
+
 // getTransactions returns a page of an address's allowlist-filtered transfer history.
 //
 // @Summary      Transaction history
@@ -124,6 +151,8 @@ func writeServiceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, wallet.ErrNativeTokenUnavailable):
 		writeError(w, http.StatusServiceUnavailable, "native token data unavailable")
+	case errors.Is(err, wallet.ErrWalletNotCached):
+		writeError(w, http.StatusNotFound, "wallet token cache not found")
 	case errors.Is(err, wallet.ErrUpstream):
 		writeError(w, http.StatusBadGateway, "upstream provider error")
 	case errors.Is(err, wallet.ErrStore):

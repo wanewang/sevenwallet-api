@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"wallet-api/internal/cmcmarket"
 	"wallet-api/internal/lifi"
 	"wallet-api/internal/marketdata"
 	"wallet-api/internal/tokenvalidity"
@@ -118,6 +119,26 @@ func (s *Postgres) GetFreshTokens(ctx context.Context, address, network string, 
 		return nil, false, err
 	}
 
+	return s.loadTokens(ctx, address, network, fetchedAt)
+}
+
+// GetLatestTokens returns the newest stored snapshot without a freshness test.
+func (s *Postgres) GetLatestTokens(ctx context.Context, address, network string) (*wallet.TokenPortfolio, bool, error) {
+	address = strings.ToLower(address)
+	var fetchedAt time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT fetched_at FROM token_fetch_meta
+		WHERE address=$1 AND network=$2`, address, network).Scan(&fetchedAt)
+	if err == pgx.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return s.loadTokens(ctx, address, network, fetchedAt)
+}
+
+func (s *Postgres) loadTokens(ctx context.Context, address, network string, fetchedAt time.Time) (*wallet.TokenPortfolio, bool, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT token_address, is_native, symbol, name, decimals, raw_balance, balance,
 		       price_currency, price_value, price_updated_at
@@ -127,7 +148,7 @@ func (s *Postgres) GetFreshTokens(ctx context.Context, address, network string, 
 	}
 	defer rows.Close()
 
-	p := &wallet.TokenPortfolio{Address: address, Network: network, FetchedAt: fetchedAt}
+	p := &wallet.TokenPortfolio{Address: address, Network: network, FetchedAt: fetchedAt, Tokens: make([]wallet.Token, 0)}
 	for rows.Next() {
 		var t wallet.Token
 		var curr, val, updated *string
@@ -278,6 +299,56 @@ func (s *Postgres) LoadCoinMappings(ctx context.Context) ([]marketdata.CoinMappi
 	return mappings, len(mappings) > 0, nil
 }
 
+// ReplaceCoinMarketCapMappings atomically replaces the complete supported CMC catalog.
+func (s *Postgres) ReplaceCoinMarketCapMappings(ctx context.Context, mappings []cmcmarket.CoinMapping) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.Background())
+
+	if _, err := tx.Exec(ctx, "TRUNCATE coinmarketcap_coin_mappings"); err != nil {
+		return err
+	}
+	if _, err := tx.CopyFrom(ctx,
+		pgx.Identifier{"coinmarketcap_coin_mappings"},
+		[]string{"id", "name", "symbol", "platform_id", "address", "fetched_at"},
+		pgx.CopyFromSlice(len(mappings), func(i int) ([]any, error) {
+			mapping := mappings[i]
+			return []any{mapping.ID, mapping.Name, mapping.Symbol, mapping.PlatformID, mapping.Address, mapping.FetchedAt}, nil
+		}),
+	); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// LoadCoinMarketCapMappings returns the complete ordered CMC catalog, if present.
+func (s *Postgres) LoadCoinMarketCapMappings(ctx context.Context) ([]cmcmarket.CoinMapping, bool, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, symbol, platform_id, address, fetched_at
+		FROM coinmarketcap_coin_mappings
+		ORDER BY id, platform_id, address`)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	var mappings []cmcmarket.CoinMapping
+	for rows.Next() {
+		var mapping cmcmarket.CoinMapping
+		if err := rows.Scan(&mapping.ID, &mapping.Name, &mapping.Symbol, &mapping.PlatformID, &mapping.Address, &mapping.FetchedAt); err != nil {
+			return nil, false, err
+		}
+		mapping.FetchedAt = mapping.FetchedAt.UTC()
+		mappings = append(mappings, mapping)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	return mappings, len(mappings) > 0, nil
+}
+
 // GetTokenMeta returns the stored Moralis verdict/metadata for a contract, if
 // present. No TTL filter — freshness is decided by the caller so a stale row can
 // still serve as a fallback.
@@ -390,6 +461,66 @@ func (s *Postgres) SaveMarketData(ctx context.Context, records []marketdata.Reco
 			record.FetchedAt)
 	}
 
+	results := s.pool.SendBatch(ctx, &batch)
+	return finishMarketBatch(results, len(records))
+}
+
+// LoadCoinMarketCapMarketData loads only the requested CMC market keys.
+func (s *Postgres) LoadCoinMarketCapMarketData(ctx context.Context, keys []marketdata.Key) (map[marketdata.Key]cmcmarket.Record, error) {
+	result := make(map[marketdata.Key]cmcmarket.Record, len(keys))
+	if len(keys) == 0 {
+		return result, nil
+	}
+	chains := make([]string, len(keys))
+	tokenKeys := make([]string, len(keys))
+	for i, key := range keys {
+		chains[i] = key.Chain
+		tokenKeys[i] = key.TokenKey
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT m.chain, m.token_key, m.coinmarketcap_id, m.price_usd,
+		       m.change_24h_percent, m.fetched_at
+		FROM coinmarketcap_market_data AS m
+		JOIN unnest($1::text[], $2::text[]) AS wanted(chain, token_key)
+		  ON m.chain=wanted.chain AND m.token_key=wanted.token_key`, chains, tokenKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var record cmcmarket.Record
+		if err := rows.Scan(&record.Chain, &record.TokenKey, &record.CoinMarketCapID, &record.PriceUSD, &record.Change24H, &record.FetchedAt); err != nil {
+			return nil, err
+		}
+		record.FetchedAt = record.FetchedAt.UTC()
+		result[record.Key] = record
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// SaveCoinMarketCapMarketData upserts CMC records without allowing older writes to win.
+func (s *Postgres) SaveCoinMarketCapMarketData(ctx context.Context, records []cmcmarket.Record) error {
+	if len(records) == 0 {
+		return nil
+	}
+	var batch pgx.Batch
+	for _, record := range records {
+		batch.Queue(`
+			INSERT INTO coinmarketcap_market_data
+			(chain, token_key, coinmarketcap_id, price_usd, change_24h_percent, fetched_at)
+			VALUES ($1,$2,$3,$4,$5,$6)
+			ON CONFLICT (chain, token_key) DO UPDATE SET
+			  coinmarketcap_id=EXCLUDED.coinmarketcap_id,
+			  price_usd=EXCLUDED.price_usd,
+			  change_24h_percent=EXCLUDED.change_24h_percent,
+			  fetched_at=EXCLUDED.fetched_at
+			WHERE EXCLUDED.fetched_at >= coinmarketcap_market_data.fetched_at`,
+			record.Chain, record.TokenKey, record.CoinMarketCapID, record.PriceUSD,
+			record.Change24H, record.FetchedAt)
+	}
 	results := s.pool.SendBatch(ctx, &batch)
 	return finishMarketBatch(results, len(records))
 }

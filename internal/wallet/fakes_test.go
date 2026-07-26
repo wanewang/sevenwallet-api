@@ -47,6 +47,16 @@ func (s *fakeTokenStore) GetFreshTokens(ctx context.Context, address, network st
 	return nil, false, nil
 }
 
+func (s *fakeTokenStore) GetLatestTokens(context.Context, string, string) (*TokenPortfolio, bool, error) {
+	if s.getErr != nil {
+		return nil, false, s.getErr
+	}
+	if s.saved == nil {
+		return nil, false, nil
+	}
+	return s.saved, true, nil
+}
+
 func (s *fakeTokenStore) SaveTokens(ctx context.Context, p *TokenPortfolio) error {
 	s.saveCalls++
 	if s.saveErr != nil {
@@ -117,6 +127,18 @@ type fakeMarketEnricher struct {
 	calls int
 	seen  []Token
 	out   []Token
+}
+
+type fakeMarketComparator struct {
+	calls int
+	seen  []Token
+	out   []MarketPair
+}
+
+func (f *fakeMarketComparator) Compare(_ context.Context, tokens []Token) []MarketPair {
+	f.calls++
+	f.seen = append([]Token(nil), tokens...)
+	return append([]MarketPair(nil), f.out...)
 }
 
 func (f *fakeMarketEnricher) EnrichTokens(_ context.Context, tokens []Token) []Token {
