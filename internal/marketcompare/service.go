@@ -3,17 +3,19 @@ package marketcompare
 
 import (
 	"context"
+	"sync"
 	"time"
 
+	"wallet-api/internal/ptr"
 	"wallet-api/internal/wallet"
 )
 
 type CoinGecko interface {
-	LookupFresh(context.Context, []wallet.Token) []*wallet.CoinGeckoMarket
+	LookupFreshWithProgress(context.Context, []wallet.Token, func([]*wallet.CoinGeckoMarket)) []*wallet.CoinGeckoMarket
 }
 
 type CoinMarketCap interface {
-	LookupFresh(context.Context, []wallet.Token) []*wallet.CoinMarketCapMarket
+	LookupFreshWithProgress(context.Context, []wallet.Token, func([]*wallet.CoinMarketCapMarket)) []*wallet.CoinMarketCapMarket
 }
 
 // Service runs both independent providers under one response-time budget.
@@ -40,47 +42,109 @@ func (s *Service) Compare(ctx context.Context, tokens []wallet.Token) []wallet.M
 	lookupCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
-	cgCh := make(chan []*wallet.CoinGeckoMarket, 1)
-	cmcCh := make(chan []*wallet.CoinMarketCapMarket, 1)
+	cg := newProgressState(cloneCoinGeckoMarket)
+	cmc := newProgressState(cloneCoinMarketCapMarket)
+	cgDone := make(chan struct{})
+	cmcDone := make(chan struct{})
 	if s.cg != nil {
-		go func() { cgCh <- s.cg.LookupFresh(lookupCtx, tokens) }()
+		go func() {
+			defer close(cgDone)
+			final := s.cg.LookupFreshWithProgress(lookupCtx, tokens, func(values []*wallet.CoinGeckoMarket) {
+				if lookupCtx.Err() == nil {
+					cg.publish(values)
+				}
+			})
+			if lookupCtx.Err() == nil {
+				cg.publish(final)
+			}
+		}()
 	} else {
-		cgCh <- nil
+		close(cgDone)
 	}
 	if s.cmc != nil {
-		go func() { cmcCh <- s.cmc.LookupFresh(lookupCtx, tokens) }()
+		go func() {
+			defer close(cmcDone)
+			final := s.cmc.LookupFreshWithProgress(lookupCtx, tokens, func(values []*wallet.CoinMarketCapMarket) {
+				if lookupCtx.Err() == nil {
+					cmc.publish(values)
+				}
+			})
+			if lookupCtx.Err() == nil {
+				cmc.publish(final)
+			}
+		}()
 	} else {
-		cmcCh <- nil
+		close(cmcDone)
 	}
 
-	var cg []*wallet.CoinGeckoMarket
-	var cmc []*wallet.CoinMarketCapMarket
-	cgPending, cmcPending := true, true
-	for cgPending || cmcPending {
+	for cgDone != nil || cmcDone != nil {
 		select {
-		case cg = <-cgCh:
-			cgPending = false
-		case cmc = <-cmcCh:
-			cmcPending = false
+		case <-cgDone:
+			cgDone = nil
+		case <-cmcDone:
+			cmcDone = nil
 		case <-lookupCtx.Done():
-			if cgPending {
-				select {
-				case cg = <-cgCh:
-					cgPending = false
-				default:
-				}
-			}
-			if cmcPending {
-				select {
-				case cmc = <-cmcCh:
-					cmcPending = false
-				default:
-				}
-			}
-			return merge(pairs, cg, cmc)
+			return merge(pairs, cg.snapshot(), cmc.snapshot())
 		}
 	}
-	return merge(pairs, cg, cmc)
+	return merge(pairs, cg.snapshot(), cmc.snapshot())
+}
+
+// progressState owns immutable provider snapshots across the lookup goroutine
+// and the response goroutine. Publishing and reading both clone deeply, so
+// work that finishes after the deadline cannot mutate the emitted response.
+type progressState[T any] struct {
+	mu     sync.Mutex
+	values []T
+	clone  func(T) T
+}
+
+func newProgressState[T any](clone func(T) T) *progressState[T] {
+	return &progressState[T]{clone: clone}
+}
+
+func (s *progressState[T]) publish(values []T) {
+	cloned := cloneSlice(values, s.clone)
+	s.mu.Lock()
+	s.values = cloned
+	s.mu.Unlock()
+}
+
+func (s *progressState[T]) snapshot() []T {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneSlice(s.values, s.clone)
+}
+
+func cloneSlice[T any](values []T, clone func(T) T) []T {
+	if values == nil {
+		return nil
+	}
+	out := make([]T, len(values))
+	for i, value := range values {
+		out[i] = clone(value)
+	}
+	return out
+}
+
+func cloneCoinGeckoMarket(value *wallet.CoinGeckoMarket) *wallet.CoinGeckoMarket {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	cloned.PriceUSD = ptr.Clone(value.PriceUSD)
+	cloned.Change24HPercent = ptr.Clone(value.Change24HPercent)
+	return &cloned
+}
+
+func cloneCoinMarketCapMarket(value *wallet.CoinMarketCapMarket) *wallet.CoinMarketCapMarket {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	cloned.PriceUSD = ptr.Clone(value.PriceUSD)
+	cloned.Change24HPercent = ptr.Clone(value.Change24HPercent)
+	return &cloned
 }
 
 func merge(pairs []wallet.MarketPair, cg []*wallet.CoinGeckoMarket, cmc []*wallet.CoinMarketCapMarket) []wallet.MarketPair {

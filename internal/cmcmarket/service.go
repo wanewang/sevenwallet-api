@@ -64,25 +64,37 @@ func NewService(client PriceClient, cache MarketCache, store MarketStore, misses
 // The cascade itself lives in marketpipeline; this method only resolves tokens
 // to CMC IDs and supplies the CMC-specific half.
 func (s *Service) LookupFresh(ctx context.Context, tokens []wallet.Token) []*wallet.CoinMarketCapMarket {
+	return s.lookupFresh(ctx, tokens, nil)
+}
+
+// LookupFreshWithProgress is LookupFresh with snapshots published whenever a
+// cascade tier or provider batch applies new results. The callback runs before
+// persistence for a fetched batch, allowing a deadline response to retain the
+// completed data even if a later write is still in flight.
+func (s *Service) LookupFreshWithProgress(ctx context.Context, tokens []wallet.Token, progress func([]*wallet.CoinMarketCapMarket)) []*wallet.CoinMarketCapMarket {
+	return s.lookupFresh(ctx, tokens, progress)
+}
+
+func (s *Service) lookupFresh(ctx context.Context, tokens []wallet.Token, progress func([]*wallet.CoinMarketCapMarket)) []*wallet.CoinMarketCapMarket {
 	result := make([]*wallet.CoinMarketCapMarket, len(tokens))
 	if len(tokens) == 0 || s == nil {
 		return result
 	}
 
-	expectedID, indexesByKey, keyOrder := s.resolve(tokens)
-	if len(keyOrder) == 0 {
+	request := s.resolve(tokens)
+	if len(request.KeyOrder) == 0 {
 		return result
 	}
 
+	options := marketpipeline.Options[Record]{}
+	if progress != nil {
+		options.Progress = func() { progress(result) }
+	}
 	marketpipeline.Run[int64, Record](
 		ctx,
 		&provider{service: s, result: result},
-		marketpipeline.Request[int64]{
-			KeyOrder:     keyOrder,
-			ExpectedID:   expectedID,
-			IndexesByKey: indexesByKey,
-		},
-		marketpipeline.Options[Record]{},
+		request,
+		options,
 	)
 	return result
 }
@@ -193,10 +205,12 @@ func (p *provider) Apply(indexes []int, r Record) bool {
 	return true
 }
 
-func (s *Service) resolve(tokens []wallet.Token) (map[marketkey.Key]int64, map[marketkey.Key][]int, []marketkey.Key) {
-	expectedID := make(map[marketkey.Key]int64, len(tokens))
-	indexesByKey := make(map[marketkey.Key][]int, len(tokens))
-	keyOrder := make([]marketkey.Key, 0, len(tokens))
+func (s *Service) resolve(tokens []wallet.Token) marketpipeline.Request[int64] {
+	request := marketpipeline.Request[int64]{
+		ExpectedID:   make(map[marketkey.Key]int64, len(tokens)),
+		IndexesByKey: make(map[marketkey.Key][]int, len(tokens)),
+		KeyOrder:     make([]marketkey.Key, 0, len(tokens)),
+	}
 	seen := make(map[marketkey.Key]struct{}, len(tokens))
 	for index, token := range tokens {
 		var key marketkey.Key
@@ -216,17 +230,17 @@ func (s *Service) resolve(tokens []wallet.Token) (map[marketkey.Key]int64, map[m
 			}
 			continue
 		}
-		if prior, exists := expectedID[key]; exists && prior != id {
+		if prior, exists := request.ExpectedID[key]; exists && prior != id {
 			continue
 		}
-		expectedID[key] = id
-		indexesByKey[key] = append(indexesByKey[key], index)
+		request.ExpectedID[key] = id
+		request.IndexesByKey[key] = append(request.IndexesByKey[key], index)
 		if _, exists := seen[key]; !exists {
 			seen[key] = struct{}{}
-			keyOrder = append(keyOrder, key)
+			request.KeyOrder = append(request.KeyOrder, key)
 		}
 	}
-	return expectedID, indexesByKey, keyOrder
+	return request
 }
 
 func (s *Service) recordFromPrice(id int64, price coinmarketcap.SimplePrice, fetchedAt time.Time) Record {

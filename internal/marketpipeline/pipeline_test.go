@@ -40,6 +40,7 @@ type fakeProvider struct {
 	missTTL                              time.Duration
 	cancel                               context.CancelFunc
 	promotionTTLs                        []time.Duration
+	saveStoreHandler                     func(context.Context, []rec) error
 }
 
 func newFake(ttl time.Duration, now time.Time) *fakeProvider {
@@ -81,8 +82,11 @@ func (f *fakeProvider) SaveCache(_ context.Context, writes []Write[rec]) error {
 	return f.saveCacheErr
 }
 
-func (f *fakeProvider) SaveStore(_ context.Context, records []rec) error {
+func (f *fakeProvider) SaveStore(ctx context.Context, records []rec) error {
 	f.storeWrites = append(f.storeWrites, records...)
+	if f.saveStoreHandler != nil {
+		return f.saveStoreHandler(ctx, records)
+	}
 	return f.saveStoreErr
 }
 
@@ -312,6 +316,52 @@ func TestCancellationStopsFurtherBatchesButKeepsResults(t *testing.T) {
 	}
 	if f.applied[0].payload != "a" {
 		t.Errorf("results from the completed batch were discarded, got %+v", f.applied[0])
+	}
+}
+
+func TestProgressPublishesBeforeActivePersistenceAndCancellationStopsLaterWrites(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	f := newFake(30*time.Minute, now)
+	k := keyFor("0xabc")
+	f.api["usdc"] = rec{id: "usdc", payload: "1.00", fetchedAt: now}
+
+	published := make(chan struct{})
+	storeStarted := make(chan struct{})
+	f.saveStoreHandler = func(ctx context.Context, _ []rec) error {
+		close(storeStarted)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		Run(ctx, f, requestFor(map[marketkey.Key]string{k: "usdc"}, []marketkey.Key{k}), Options[rec]{
+			Progress: func() { close(published) },
+		})
+	}()
+
+	select {
+	case <-published:
+	case <-time.After(time.Second):
+		t.Fatal("result was not published")
+	}
+	select {
+	case <-storeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("postgres persistence did not start")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("pipeline did not stop after cancellation")
+	}
+	if f.applied[0].payload != "1.00" {
+		t.Fatalf("completed result was lost: %+v", f.applied[0])
+	}
+	if len(f.cacheWrites) != 0 {
+		t.Fatalf("redis write ran after cancelled postgres persistence: %+v", f.cacheWrites)
 	}
 }
 

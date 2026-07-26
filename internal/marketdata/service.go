@@ -64,12 +64,6 @@ func NewService(client PriceClient, cache MarketCache, store MarketStore, misses
 	}
 }
 
-type resolvedToken struct {
-	Index int
-	Key   Key
-	ID    string
-}
-
 var _ wallet.MarketEnricher = (*Service)(nil)
 
 // LookupFresh returns CoinGecko comparison data aligned with tokens. It uses
@@ -78,25 +72,37 @@ var _ wallet.MarketEnricher = (*Service)(nil)
 // lives in marketpipeline; this method only resolves tokens to CoinGecko IDs
 // and supplies the CoinGecko-specific half.
 func (s *Service) LookupFresh(ctx context.Context, tokens []wallet.Token) []*wallet.CoinGeckoMarket {
+	return s.lookupFresh(ctx, tokens, nil)
+}
+
+// LookupFreshWithProgress is LookupFresh with snapshots published whenever a
+// cascade tier or provider batch applies new results. The callback runs before
+// persistence for a fetched batch, allowing a deadline response to retain the
+// completed data even if a later write is still in flight.
+func (s *Service) LookupFreshWithProgress(ctx context.Context, tokens []wallet.Token, progress func([]*wallet.CoinGeckoMarket)) []*wallet.CoinGeckoMarket {
+	return s.lookupFresh(ctx, tokens, progress)
+}
+
+func (s *Service) lookupFresh(ctx context.Context, tokens []wallet.Token, progress func([]*wallet.CoinGeckoMarket)) []*wallet.CoinGeckoMarket {
 	result := make([]*wallet.CoinGeckoMarket, len(tokens))
 	if len(tokens) == 0 || s == nil || s.catalog == nil || s.catalog.Current() == nil {
 		return result
 	}
 
-	resolved, expectedID, indexesByKey, keyOrder := s.resolve(s.catalog.Current(), tokens)
-	if len(resolved) == 0 {
+	request := s.resolve(s.catalog.Current(), tokens)
+	if len(request.KeyOrder) == 0 {
 		return result
 	}
 
+	options := marketpipeline.Options[Record]{}
+	if progress != nil {
+		options.Progress = func() { progress(result) }
+	}
 	marketpipeline.Run[string, Record](
 		ctx,
 		&lookupProvider{service: s, result: result},
-		marketpipeline.Request[string]{
-			KeyOrder:     keyOrder,
-			ExpectedID:   expectedID,
-			IndexesByKey: indexesByKey,
-		},
-		marketpipeline.Options[Record]{},
+		request,
+		options,
 	)
 	return result
 }
@@ -234,8 +240,8 @@ func (s *Service) EnrichTokens(ctx context.Context, tokens []wallet.Token) []wal
 	enrichCtx, cancel := context.WithTimeout(ctx, s.enrichTimeout)
 	defer cancel()
 
-	resolved, expectedID, indexesByKey, keyOrder := s.resolve(s.catalog.Current(), out)
-	if len(resolved) == 0 {
+	request := s.resolve(s.catalog.Current(), out)
+	if len(request.KeyOrder) == 0 {
 		return out
 	}
 
@@ -243,11 +249,7 @@ func (s *Service) EnrichTokens(ctx context.Context, tokens []wallet.Token) []wal
 	complete := marketpipeline.Run[string, Record](
 		enrichCtx,
 		&enrichProvider{service: s, tokens: out},
-		marketpipeline.Request[string]{
-			KeyOrder:     keyOrder,
-			ExpectedID:   expectedID,
-			IndexesByKey: indexesByKey,
-		},
+		request,
 		marketpipeline.Options[Record]{
 			Stale: func(key Key, record Record) {
 				stale[key] = newerStaleRecord(stale[key], record)
@@ -257,12 +259,12 @@ func (s *Service) EnrichTokens(ctx context.Context, tokens []wallet.Token) []wal
 
 	// Anything the cascade could not complete falls back to the newest expired
 	// record seen, in the reduced stale form: no price, no Price object.
-	for _, key := range keyOrder {
+	for _, key := range request.KeyOrder {
 		if complete[key] {
 			continue
 		}
 		if record, ok := stale[key]; ok {
-			s.applyStale(out, indexesByKey[key], record)
+			s.applyStale(out, request.IndexesByKey[key], record)
 		}
 	}
 	return out
@@ -353,11 +355,12 @@ func (p *enrichProvider) Logf(format string, args ...any) {
 	p.service.logf("marketdata: "+format, args...)
 }
 
-func (s *Service) resolve(catalog *Catalog, tokens []wallet.Token) ([]resolvedToken, map[Key]string, map[Key][]int, []Key) {
-	resolved := make([]resolvedToken, 0, len(tokens))
-	expectedID := make(map[Key]string, len(tokens))
-	indexesByKey := make(map[Key][]int, len(tokens))
-	keyOrder := make([]Key, 0, len(tokens))
+func (s *Service) resolve(catalog *Catalog, tokens []wallet.Token) marketpipeline.Request[string] {
+	request := marketpipeline.Request[string]{
+		ExpectedID:   make(map[Key]string, len(tokens)),
+		IndexesByKey: make(map[Key][]int, len(tokens)),
+		KeyOrder:     make([]Key, 0, len(tokens)),
+	}
 	seenKeys := make(map[Key]struct{}, len(tokens))
 	for index, token := range tokens {
 		var id string
@@ -382,17 +385,16 @@ func (s *Service) resolve(catalog *Catalog, tokens []wallet.Token) ([]resolvedTo
 		if !ok || strings.TrimSpace(id) == "" {
 			continue
 		}
-		resolved = append(resolved, resolvedToken{Index: index, Key: key, ID: id})
-		if _, exists := expectedID[key]; !exists {
-			expectedID[key] = id
+		if _, exists := request.ExpectedID[key]; !exists {
+			request.ExpectedID[key] = id
 		}
-		indexesByKey[key] = append(indexesByKey[key], index)
+		request.IndexesByKey[key] = append(request.IndexesByKey[key], index)
 		if _, exists := seenKeys[key]; !exists {
 			seenKeys[key] = struct{}{}
-			keyOrder = append(keyOrder, key)
+			request.KeyOrder = append(request.KeyOrder, key)
 		}
 	}
-	return resolved, expectedID, indexesByKey, keyOrder
+	return request
 }
 
 func (s *Service) clientPrices(ctx context.Context, ids []string) (map[string]coingecko.SimplePrice, error) {
@@ -400,25 +402,6 @@ func (s *Service) clientPrices(ctx context.Context, ids []string) (map[string]co
 		return nil, context.Canceled
 	}
 	return s.client.GetPrices(ctx, ids)
-}
-
-func matchingRecord(records map[Key]Record, key Key, expectedID string) (Record, bool) {
-	record, ok := records[key]
-	if !ok || record.CoinGeckoID != expectedID {
-		return Record{}, false
-	}
-	record.Key = key
-	return record, true
-}
-
-func incompleteKeys(keys []Key, complete map[Key]bool) []Key {
-	remaining := make([]Key, 0, len(keys))
-	for _, key := range keys {
-		if !complete[key] {
-			remaining = append(remaining, key)
-		}
-	}
-	return remaining
 }
 
 func newerStaleRecord(current, candidate Record) Record {

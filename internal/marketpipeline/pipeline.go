@@ -79,6 +79,11 @@ type Options[R any] struct {
 	// key that no tier completed. Enrichment uses it to fall back to old data;
 	// fresh-only lookups leave it nil and expired records are simply dropped.
 	Stale func(key marketkey.Key, record R)
+	// Progress runs after newly applied results become available and before any
+	// persistence those results trigger. Comparison lookups use it to publish a
+	// safe snapshot that remains eligible for a deadline response even when a
+	// subsequent PostgreSQL or Redis write is still in flight.
+	Progress func()
 }
 
 // Run executes the cascade and reports which keys a tier completed. It never
@@ -98,6 +103,7 @@ func Run[ID cmp.Ordered, R any](ctx context.Context, p Provider[ID, R], req Requ
 
 	// Tier 1: Redis.
 	cached := load(ctx, req.KeyOrder, p.LoadCache, p.Logf, "redis load failed")
+	progressed := false
 	for _, key := range req.KeyOrder {
 		record, ok := matching(p, cached, key, req.ExpectedID[key])
 		if !ok {
@@ -109,7 +115,14 @@ func Run[ID cmp.Ordered, R any](ctx context.Context, p Provider[ID, R], req Requ
 		}
 		if p.Apply(req.IndexesByKey[key], record) {
 			complete[key] = true
+			progressed = true
 		}
+	}
+	if progressed {
+		opts.progress()
+	}
+	if ctx.Err() != nil {
+		return complete
 	}
 
 	// Tier 2: PostgreSQL, promoting anything fresh back into Redis.
@@ -117,6 +130,7 @@ func Run[ID cmp.Ordered, R any](ctx context.Context, p Provider[ID, R], req Requ
 	if len(remaining) > 0 {
 		stored := load(ctx, remaining, p.LoadStore, p.Logf, "postgres load failed")
 		promotions := make([]Write[R], 0, len(remaining))
+		progressed = false
 		for _, key := range remaining {
 			record, ok := matching(p, stored, key, req.ExpectedID[key])
 			if !ok {
@@ -131,23 +145,36 @@ func Run[ID cmp.Ordered, R any](ctx context.Context, p Provider[ID, R], req Requ
 				continue
 			}
 			complete[key] = true
+			progressed = true
 			if left := marketkey.RemainingTTL(fetchedAt, now, ttl); left > 0 {
 				promotions = append(promotions, Write[R]{Record: record, TTL: left})
 			}
+		}
+		if progressed {
+			opts.progress()
+		}
+		if ctx.Err() != nil {
+			return complete
 		}
 		if len(promotions) > 0 {
 			if err := p.SaveCache(ctx, promotions); err != nil {
 				p.Logf("redis promotion failed: %v", err)
 			}
 		}
+		if ctx.Err() != nil {
+			return complete
+		}
 	}
 
 	// Tier 3: the provider itself.
-	fetchMissing(ctx, p, req, complete)
+	fetchMissing(ctx, p, req, complete, opts)
 	return complete
 }
 
-func fetchMissing[ID cmp.Ordered, R any](ctx context.Context, p Provider[ID, R], req Request[ID], complete map[marketkey.Key]bool) {
+func fetchMissing[ID cmp.Ordered, R any](ctx context.Context, p Provider[ID, R], req Request[ID], complete map[marketkey.Key]bool, opts Options[R]) {
+	if ctx.Err() != nil {
+		return
+	}
 	// Keys with a live negative-cache entry are dropped before batching: the
 	// provider had nothing for them recently, so asking again wastes a call.
 	missed, err := p.LoadMisses(ctx, incomplete(req.KeyOrder, complete))
@@ -228,9 +255,18 @@ func fetchMissing[ID cmp.Ordered, R any](ctx context.Context, p Provider[ID, R],
 				fetched = append(fetched, keyed)
 			}
 		}
+		if len(fetched) > 0 {
+			opts.progress()
+			if ctx.Err() != nil {
+				return
+			}
+		}
 		if len(misses) > 0 {
 			if err := p.SaveMisses(ctx, misses, p.MissTTL()); err != nil {
 				p.Logf("miss save failed: %v", err)
+			}
+			if ctx.Err() != nil {
+				return
 			}
 		}
 		if len(fetched) == 0 {
@@ -240,6 +276,9 @@ func fetchMissing[ID cmp.Ordered, R any](ctx context.Context, p Provider[ID, R],
 		// these records applied and the remaining batches still run.
 		if err := p.SaveStore(ctx, fetched); err != nil {
 			p.Logf("postgres save failed: %v", err)
+		}
+		if ctx.Err() != nil {
+			return
 		}
 		writes := make([]Write[R], len(fetched))
 		for i, record := range fetched {
@@ -288,5 +327,11 @@ func incomplete(keys []marketkey.Key, complete map[marketkey.Key]bool) []marketk
 func (o Options[R]) noteStale(key marketkey.Key, record R) {
 	if o.Stale != nil {
 		o.Stale(key, record)
+	}
+}
+
+func (o Options[R]) progress() {
+	if o.Progress != nil {
+		o.Progress()
 	}
 }
