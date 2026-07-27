@@ -75,11 +75,11 @@ func (h *handlers) getTokens(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p)
 }
 
-// getWalletTokens returns an address's allowlist-filtered token portfolio
-// without CoinGecko enrichment.
+// getWalletTokens returns an address's filtered token portfolio without
+// CoinGecko market enrichment.
 //
 // @Summary      Wallet token portfolio
-// @Description  Native + ERC-20 holdings for an address, filtered to the LI.FI allowlist and enriched with Moralis metadata when needed. CoinGecko enrichment is not called.
+// @Description  Native + ERC-20 holdings for an address. Native and LI.FI-listed tokens are kept and enriched from the LI.FI list; any other ERC-20 is kept only if Moralis validates it, and dropped otherwise. CoinGecko market enrichment is not applied, so change24hPercent, marketCapUSD, and marketDataUpdatedAt are always null on this route.
 // @Tags         wallet
 // @Produce      json
 // @Param        address  path      string  true  "0x-prefixed 20-byte hex address"

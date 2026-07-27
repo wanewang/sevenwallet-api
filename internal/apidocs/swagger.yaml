@@ -293,9 +293,11 @@ paths:
       - tokens
   /wallet/{address}:
     get:
-      description: Native + ERC-20 holdings for an address, filtered to the LI.FI
-        allowlist and enriched with Moralis metadata when needed. CoinGecko enrichment
-        is not called.
+      description: Native + ERC-20 holdings for an address. Native and LI.FI-listed
+        tokens are kept and enriched from the LI.FI list; any other ERC-20 is kept
+        only if Moralis validates it, and dropped otherwise. CoinGecko market enrichment
+        is not applied, so change24hPercent, marketCapUSD, and marketDataUpdatedAt
+        are always null on this route.
       parameters:
       - description: 0x-prefixed 20-byte hex address
         in: path

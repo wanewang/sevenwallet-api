@@ -210,7 +210,8 @@ func TestGetTokensCacheHitFiltersCachedSnapshot(t *testing.T) {
 
 func TestGetWalletTokensSkipsMarketEnrichmentOnCacheMiss(t *testing.T) {
 	fa := &fakeAlchemy{tokens: []alchemy.Token{
-		{TokenAddress: nil, Symbol: "ETH", Name: "Ethereum", Decimals: 18, RawBalance: "1000000000000000000"},
+		{TokenAddress: nil, Symbol: "ETH", Name: "Ethereum", Decimals: 18, RawBalance: "1000000000000000000",
+			Price: &alchemy.Price{Currency: "usd", Value: "3200.50", LastUpdatedAt: "2026-06-23T00:00:00Z"}},
 		{TokenAddress: usdc("0xA0B8"), Symbol: "USDC", Name: "USD Coin", Decimals: 6, RawBalance: "12500000"},
 		{TokenAddress: usdc("0xSPAM"), Symbol: "SCAM", Decimals: 18, RawBalance: "999"},
 	}}
@@ -230,6 +231,28 @@ func TestGetWalletTokensSkipsMarketEnrichmentOnCacheMiss(t *testing.T) {
 	}
 	if len(got.Tokens) != 2 || got.Tokens[0].Symbol != "ETH" || got.Tokens[1].Symbol != "USDC" {
 		t.Fatalf("filtered tokens = %+v, want ETH + USDC", got.Tokens)
+	}
+
+	// Skipping CoinGecko must not cost the route any pre-CoinGecko data:
+	// Alchemy prices and LI.FI list metadata still have to survive.
+	if eth := got.Tokens[0]; eth.Price == nil || eth.Price.Value != "3200.50" {
+		t.Errorf("Alchemy price not preserved on ETH: %+v", eth.Price)
+	}
+	u := got.Tokens[1]
+	if u.LogoURI == nil || *u.LogoURI != "https://logo/usdc.png" {
+		t.Errorf("USDC LogoURI not enriched from LI.FI: %v", u.LogoURI)
+	}
+	if u.PriceUSD == nil || *u.PriceUSD != "1.0001" {
+		t.Errorf("USDC PriceUSD not enriched from LI.FI: %v", u.PriceUSD)
+	}
+	if u.CoinKey == nil || *u.CoinKey != "USDC" {
+		t.Errorf("USDC CoinKey not enriched from LI.FI: %v", u.CoinKey)
+	}
+	// CoinGecko-only fields stay null on this route.
+	for _, tok := range got.Tokens {
+		if tok.Change24HPercent != nil || tok.MarketCapUSD != nil || tok.MarketDataUpdatedAt != nil {
+			t.Errorf("%s carries CoinGecko market fields: %+v", tok.Symbol, tok)
+		}
 	}
 }
 
