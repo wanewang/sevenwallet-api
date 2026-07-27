@@ -26,6 +26,21 @@ func TestServeOpenAPISpec(t *testing.T) {
 	if _, ok := paths["/addresses/{address}/tokens"]; !ok {
 		t.Errorf("spec missing tokens path; got paths %v", paths)
 	}
+	walletPath, ok := paths["/wallet/{address}"].(map[string]any)
+	if !ok {
+		t.Fatalf("spec missing wallet path; got paths %v", paths)
+	}
+	walletGet, ok := walletPath["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("wallet path has no GET operation: %v", walletPath)
+	}
+	walletResponses, ok := walletGet["responses"].(map[string]any)
+	if !ok {
+		t.Fatalf("wallet GET has no responses: %v", walletGet)
+	}
+	if _, ok := walletResponses["500"]; !ok {
+		t.Errorf("wallet GET responses missing 500: %v", walletResponses)
+	}
 	nativePath, ok := paths["/native"].(map[string]any)
 	if !ok {
 		t.Fatalf("spec missing native path; got paths %v", paths)

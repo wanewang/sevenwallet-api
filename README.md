@@ -13,6 +13,7 @@ read-through (cache-first) strategy and a configurable TTL.
 |---|---|
 | `GET /v1/native` | Native ETH metadata and USD price from the refreshed LI.FI snapshot |
 | `GET /v1/tokens/{address}` | Latest locally cached wallet tokens with fresh, source-labeled `cg` and `cmc` market data |
+| `GET /v1/wallet/{address}` | Token portfolio with Alchemy balances and LI.FI/Moralis filtering, without CoinGecko enrichment |
 | `GET /v1/addresses/{address}/tokens` | Token portfolio — native ETH + ERC-20, with metadata and prices |
 | `GET /v1/addresses/{address}/transactions` | Transaction history (asset transfers), paginated via `limit` & `pageKey` |
 
@@ -30,6 +31,12 @@ Market data is returned independently as `cg` (CoinGecko) and `cmc`
 provider is unavailable. Price and 24-hour-change fields may also be individually
 `null`. Only fresh market data is exposed here, and one provider failing does
 not fail the response.
+
+`GET /v1/wallet/{address}` uses the same cache-first Alchemy snapshot, LI.FI
+allowlist, and Moralis validation pipeline as the address token route, but does
+not call CoinGecko. It returns the same `TokenPortfolio` shape. Alchemy `price`
+and LI.FI `priceUSD` data may still be present, while CoinGecko-derived market
+fields are not populated.
 
 `GET /v1/native` returns a bare token array. It currently contains one ETH item,
 allowing more native-token entries to be added later without changing the

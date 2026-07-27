@@ -208,6 +208,74 @@ func TestGetTokensCacheHitFiltersCachedSnapshot(t *testing.T) {
 	}
 }
 
+func TestGetWalletTokensSkipsMarketEnrichmentOnCacheMiss(t *testing.T) {
+	fa := &fakeAlchemy{tokens: []alchemy.Token{
+		{TokenAddress: nil, Symbol: "ETH", Name: "Ethereum", Decimals: 18, RawBalance: "1000000000000000000"},
+		{TokenAddress: usdc("0xA0B8"), Symbol: "USDC", Name: "USD Coin", Decimals: 6, RawBalance: "12500000"},
+		{TokenAddress: usdc("0xSPAM"), Symbol: "SCAM", Decimals: 18, RawBalance: "999"},
+	}}
+	ts := &fakeTokenStore{}
+	market := &fakeMarketEnricher{}
+	svc := NewService(fa, ts, &fakeTxCache{}, allowUSDC(), denyValidator(), market, "eth-mainnet", time.Minute)
+
+	got, err := svc.GetWalletTokens(context.Background(), "0xABC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fa.tokenCalls != 1 || ts.saveCalls != 1 {
+		t.Fatalf("fetch/save calls = %d/%d, want 1/1", fa.tokenCalls, ts.saveCalls)
+	}
+	if market.calls != 0 {
+		t.Fatalf("market enricher calls = %d, want 0", market.calls)
+	}
+	if len(got.Tokens) != 2 || got.Tokens[0].Symbol != "ETH" || got.Tokens[1].Symbol != "USDC" {
+		t.Fatalf("filtered tokens = %+v, want ETH + USDC", got.Tokens)
+	}
+}
+
+func TestGetWalletTokensSkipsMarketEnrichmentOnCacheHit(t *testing.T) {
+	cached := &TokenPortfolio{Address: "0xabc", Network: "eth-mainnet", Tokens: []Token{
+		{IsNative: true, Symbol: "ETH", Decimals: 18, RawBalance: "0", Balance: "0"},
+		{TokenAddress: usdc("0xA0B8"), Symbol: "usdc", Decimals: 6, RawBalance: "12500000", Balance: "12.5"},
+	}}
+	fa := &fakeAlchemy{}
+	market := &fakeMarketEnricher{}
+	svc := NewService(fa, &fakeTokenStore{saved: cached, fresh: true}, &fakeTxCache{}, allowUSDC(), denyValidator(), market, "eth-mainnet", time.Minute)
+
+	got, err := svc.GetWalletTokens(context.Background(), "0xABC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fa.tokenCalls != 0 {
+		t.Fatalf("Alchemy calls = %d, want 0", fa.tokenCalls)
+	}
+	if market.calls != 0 {
+		t.Fatalf("market enricher calls = %d, want 0", market.calls)
+	}
+	if len(got.Tokens) != 2 || got.Tokens[1].Symbol != "USDC" {
+		t.Fatalf("cached tokens = %+v", got.Tokens)
+	}
+}
+
+func TestGetWalletTokensReturnsEmptyAfterFiltering(t *testing.T) {
+	fa := &fakeAlchemy{tokens: []alchemy.Token{{
+		TokenAddress: usdc("0xSPAM"), Symbol: "SCAM", Decimals: 18, RawBalance: "999",
+	}}}
+	market := &fakeMarketEnricher{}
+	svc := NewService(fa, &fakeTokenStore{}, &fakeTxCache{}, allowUSDC(), denyValidator(), market, "eth-mainnet", time.Minute)
+
+	got, err := svc.GetWalletTokens(context.Background(), "0xABC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tokens) != 0 {
+		t.Fatalf("tokens = %+v, want empty portfolio", got.Tokens)
+	}
+	if market.calls != 0 {
+		t.Fatalf("market enricher calls = %d, want 0", market.calls)
+	}
+}
+
 func TestGetTokenMarketsUsesLatestSnapshotFiltersAndNeverCallsAlchemy(t *testing.T) {
 	fetchedAt := time.Now().UTC().Add(-24 * time.Hour)
 	cached := &TokenPortfolio{Address: "0xabc", Network: "eth-mainnet", FetchedAt: fetchedAt, Tokens: []Token{
