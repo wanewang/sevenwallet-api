@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 type stubService struct {
 	portfolio    *wallet.TokenPortfolio
+	wallet       *wallet.TokenPortfolio
 	markets      *wallet.TokenMarketPortfolio
 	page         *wallet.TransactionPage
 	nativeTokens []wallet.Token
@@ -21,6 +23,12 @@ type stubService struct {
 }
 
 func (s *stubService) GetTokens(ctx context.Context, address string) (*wallet.TokenPortfolio, error) {
+	return s.portfolio, s.err
+}
+func (s *stubService) GetWalletTokens(ctx context.Context, address string) (*wallet.TokenPortfolio, error) {
+	if s.wallet != nil {
+		return s.wallet, s.err
+	}
 	return s.portfolio, s.err
 }
 func (s *stubService) GetTokenMarkets(ctx context.Context, address string) (*wallet.TokenMarketPortfolio, error) {
@@ -82,6 +90,35 @@ func TestTokensEndpointRejectsBadAddress(t *testing.T) {
 	rec := doGet(NewRouter(svc), "/v1/addresses/not-an-address/tokens")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestWalletTokensEndpointOK(t *testing.T) {
+	svc := &stubService{wallet: &wallet.TokenPortfolio{Address: validAddr, Network: "eth-mainnet"}}
+	rec := doGet(NewRouter(svc), "/v1/wallet/"+validAddr)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+	var got wallet.TokenPortfolio
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if got.Address != validAddr {
+		t.Errorf("address = %q", got.Address)
+	}
+}
+
+func TestWalletTokensEndpointRejectsBadAddress(t *testing.T) {
+	rec := doGet(NewRouter(&stubService{}), "/v1/wallet/not-an-address")
+	if rec.Code != http.StatusBadRequest || rec.Body.String() != "{\"error\":\"invalid address\"}\n" {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestWalletTokensEndpointMapsUnexpectedErrorTo500(t *testing.T) {
+	rec := doGet(NewRouter(&stubService{err: errors.New("unexpected")}), "/v1/wallet/"+validAddr)
+	if rec.Code != http.StatusInternalServerError || rec.Body.String() != "{\"error\":\"internal error\"}\n" {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
 	}
 }
 

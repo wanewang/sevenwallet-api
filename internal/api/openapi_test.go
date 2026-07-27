@@ -26,6 +26,31 @@ func TestServeOpenAPISpec(t *testing.T) {
 	if _, ok := paths["/addresses/{address}/tokens"]; !ok {
 		t.Errorf("spec missing tokens path; got paths %v", paths)
 	}
+	walletPath, ok := paths["/wallet/{address}"].(map[string]any)
+	if !ok {
+		t.Fatalf("spec missing wallet path; got paths %v", paths)
+	}
+	walletGet, ok := walletPath["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("wallet path has no GET operation: %v", walletPath)
+	}
+	walletResponses, ok := walletGet["responses"].(map[string]any)
+	if !ok {
+		t.Fatalf("wallet GET has no responses: %v", walletGet)
+	}
+	for _, code := range []string{"200", "400", "500", "502", "503"} {
+		if _, ok := walletResponses[code]; !ok {
+			t.Errorf("wallet GET responses missing %s: %v", code, walletResponses)
+		}
+	}
+	walletOK, ok := walletResponses["200"].(map[string]any)
+	if !ok {
+		t.Fatalf("wallet GET has no 200 response: %v", walletResponses)
+	}
+	walletSchema, ok := walletOK["schema"].(map[string]any)
+	if !ok || walletSchema["$ref"] != "#/definitions/wallet-api_internal_wallet.TokenPortfolio" {
+		t.Errorf("wallet 200 schema = %v, want TokenPortfolio reference", walletOK["schema"])
+	}
 	nativePath, ok := paths["/native"].(map[string]any)
 	if !ok {
 		t.Fatalf("spec missing native path; got paths %v", paths)

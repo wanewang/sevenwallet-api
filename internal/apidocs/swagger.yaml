@@ -291,4 +291,43 @@ paths:
       summary: Cached wallet token markets
       tags:
       - tokens
+  /wallet/{address}:
+    get:
+      description: Native + ERC-20 holdings for an address. Native and LI.FI-listed
+        tokens are kept and enriched from the LI.FI list; any other ERC-20 is kept
+        only if Moralis validates it, and dropped otherwise. CoinGecko market enrichment
+        is not applied, so change24hPercent, marketCapUSD, and marketDataUpdatedAt
+        are always null on this route.
+      parameters:
+      - description: 0x-prefixed 20-byte hex address
+        in: path
+        name: address
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/wallet-api_internal_wallet.TokenPortfolio'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "502":
+          description: Bad Gateway
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      summary: Wallet token portfolio
+      tags:
+      - wallet
 swagger: "2.0"

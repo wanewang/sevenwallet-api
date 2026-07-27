@@ -41,11 +41,22 @@ func NewService(a AlchemyClient, ts TokenStore, tc TxCache, allow Allowlist, val
 // GetTokens returns the address's token portfolio, served from the DB snapshot
 // when fresh and otherwise fetched from Alchemy and written through to the DB.
 func (s *Service) GetTokens(ctx context.Context, address string) (*TokenPortfolio, error) {
+	return s.getTokens(ctx, address, true)
+}
+
+// GetWalletTokens returns the address's token portfolio without market
+// enrichment. It shares the normal cache, Alchemy, allowlist, and Moralis
+// filtering pipeline.
+func (s *Service) GetWalletTokens(ctx context.Context, address string) (*TokenPortfolio, error) {
+	return s.getTokens(ctx, address, false)
+}
+
+func (s *Service) getTokens(ctx context.Context, address string, enrichMarket bool) (*TokenPortfolio, error) {
 	addr := NormalizeAddress(address)
 	if p, ok, err := s.tokens.GetFreshTokens(ctx, addr, s.network, s.ttl); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrStore, err)
 	} else if ok {
-		return s.finishTokens(ctx, p), nil
+		return s.finishTokens(ctx, p, enrichMarket), nil
 	}
 	raw, err := s.alchemy.GetTokens(ctx, addr, s.network)
 	if err != nil {
@@ -64,7 +75,7 @@ func (s *Service) GetTokens(ctx context.Context, address string) (*TokenPortfoli
 	if err := s.tokens.SaveTokens(ctx, p); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrStore, err)
 	}
-	return s.finishTokens(ctx, p), nil
+	return s.finishTokens(ctx, p, enrichMarket), nil
 }
 
 // GetTokenMarkets loads the latest saved wallet snapshot without refreshing it
@@ -230,9 +241,9 @@ func (s *Service) filterTokens(ctx context.Context, p *TokenPortfolio) *TokenPor
 	return out
 }
 
-func (s *Service) finishTokens(ctx context.Context, p *TokenPortfolio) *TokenPortfolio {
+func (s *Service) finishTokens(ctx context.Context, p *TokenPortfolio, enrichMarket bool) *TokenPortfolio {
 	out := s.filterTokens(ctx, p)
-	if s.market != nil {
+	if enrichMarket && s.market != nil {
 		out.Tokens = s.market.EnrichTokens(ctx, out.Tokens)
 	}
 	return out
